@@ -21,6 +21,7 @@ class Player(Bot):
     """
     A pokerbot.
     """
+
     count = 0
     wins = 0
 
@@ -114,7 +115,6 @@ class Player(Bot):
         # the number of chips your opponent has contributed to the pot
         opp_contribution = STARTING_STACK - opp_stack
 
-
         # Only use DiscardAction if it's in legal_actions (which already checks street)
         # legal_actions() returns DiscardAction only when street is 2 or 3
         if DiscardAction in legal_actions:
@@ -125,33 +125,10 @@ class Player(Bot):
             min_raise, max_raise = round_state.raise_bounds()
             min_cost = min_raise - my_pip  # the cost of a minimum bet/raise
             max_cost = max_raise - my_pip  # the cost of a maximum bet/raise
-            return RaiseAction(max_raise) # go all-in
+            return RaiseAction(max_raise)  # go all-in
         if CheckAction in legal_actions:  # check-call
             return CheckAction()
         return CallAction()
-
-    def _simulate_game(self, my_cards, board_opp_cards, cards_reamining):
-        for i in range(board_opp_cards):
-
-
-    def _calc_winning_prob(self, my_cards, board_cards):
-        num_cards_remaining = 52 - len(my_cards) - len(board_cards)
-
-        cards_reamining = []
-        with open("python_skeleton/cards.txt", "r") as f:
-            for line in f:
-                card = line.strip()
-                if card not in my_cards and card not in board_cards:
-                    cards_reamining.append(card)
-        # print(cards_reamining)
-        # print(len(cards_reamining))
-        # print(num_cards_remaining)
-
-        self.count = 0
-        self.wins = 0
-
-        self._simulate_game(my_cards, board_cards, cards_reamining)
-        
 
 
 if __name__ == "__main__":
