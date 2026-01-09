@@ -99,22 +99,110 @@ class Player(Bot):
         # the number of chips your opponent has contributed to the pot
         opp_contribution = STARTING_STACK - opp_stack
 
-
         # Only use DiscardAction if it's in legal_actions (which already checks street)
         # legal_actions() returns DiscardAction only when street is 2 or 3
         if DiscardAction in legal_actions:
-            # Always discards the first card in the bot's hand
-            return DiscardAction(0)
+            discard_idx = self.choose_discard_mc(my_cards, board_cards)
+            return DiscardAction(discard_idx)
+        
+        # if DiscardAction in legal_actions:
+        #     # Always discards the lowest rank card in your hand
+
+        #     ranks = "23456789TJQKA" # order of ranks
+        #     rank_list = [-1, -1, -1] # uninitialized
+
+        #     for card in range(3): # loop through cards in hand
+        #         rank_list[card] = ranks.index(my_cards[card][0]) # get rank of each card
+
+        #     # find the card with the minimum rank
+        #     if rank_list[0] <= rank_list[1] and rank_list[0] <= rank_list[2]:
+        #         return DiscardAction(0)
+        #     elif rank_list[1] <= rank_list[2]:
+        #         return DiscardAction(1)
+        #     else:
+        #         return DiscardAction(2)
+            
+        strong_cards = "TJQKA"
+
         if RaiseAction in legal_actions:
             # the smallest and largest numbers of chips for a legal bet/raise
             min_raise, max_raise = round_state.raise_bounds()
             min_cost = min_raise - my_pip  # the cost of a minimum bet/raise
             max_cost = max_raise - my_pip  # the cost of a maximum bet/raise
-            return RaiseAction(max_raise) # go all-in
+
+            # if we have strong hole cards, let's raise a lot
+            is_strong = True
+            for card in my_cards: # Th
+                if not (card[0] in strong_cards):
+                    is_strong = False
+                    break
+
+            if is_strong:
+                return RaiseAction(min(min_raise * 10, max_raise))
+            
+            else:
+                if random.random() < 0.5:
+                    return RaiseAction(min_raise)
+                
         if CheckAction in legal_actions:  # check-call
             return CheckAction()
+        if random.random() < 0.25:
+            return FoldAction()
         return CallAction()
 
+    # MONTE CARLO DISCARD LOGIC
+
+    RANKS = "23456789TJQKA"
+    SUITS = "hdcs"
+    MC_ITERATIONS = 300
+
+    def full_deck(self):
+        return [r + s for r in self.RANKS for s in self.SUITS]
+
+    def remaining_deck(self, my_cards, board_cards):
+        deck = set(self.full_deck())
+        for c in my_cards + board_cards:
+            if c in deck:
+                deck.remove(c)
+        return list(deck)
+
+    def hand_strength(self, cards):
+        ranks = [c[0] for c in cards]
+        values = [self.RANKS.index(r) for r in ranks]
+
+        score = 0
+        score += max(values) * 2
+        score -= len(set(values))   # pairs/trips help
+        return score
+
+    def mc_once(self, my_cards, board_cards, discard_idx):
+        discarded = my_cards[discard_idx]
+        kept_cards = [c for i, c in enumerate(my_cards) if i != discard_idx]
+
+        new_board = board_cards + [discarded]
+
+        deck = self.remaining_deck(my_cards, board_cards)
+        random.shuffle(deck)
+
+        opp_cards = deck[:2]
+
+        needed = 6 - len(new_board)
+        future_board = deck[2:2 + needed]
+
+        my_hand = kept_cards + new_board + future_board
+        opp_hand = opp_cards + new_board + future_board
+
+        return self.hand_strength(my_hand) > self.hand_strength(opp_hand)
+
+    def choose_discard_mc(self, my_cards, board_cards):
+        wins = [0, 0, 0]
+
+        for i in range(3):
+            for _ in range(self.MC_ITERATIONS):
+                if self.mc_once(my_cards, board_cards, i):
+                    wins[i] += 1
+
+        return max(range(3), key=lambda i: wins[i])
 
 if __name__ == '__main__':
     run_bot(Player(), parse_args())
