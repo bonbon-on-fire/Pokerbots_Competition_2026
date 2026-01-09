@@ -114,6 +114,7 @@ class Player(Bot):
         # the number of chips your opponent has contributed to the pot
         opp_contribution = STARTING_STACK - opp_stack
 
+
         # Only use DiscardAction if it's in legal_actions (which already checks street)
         # legal_actions() returns DiscardAction only when street is 2 or 3
         if DiscardAction in legal_actions:
@@ -124,12 +125,9 @@ class Player(Bot):
             min_raise, max_raise = round_state.raise_bounds()
             min_cost = min_raise - my_pip  # the cost of a minimum bet/raise
             max_cost = max_raise - my_pip  # the cost of a maximum bet/raise
-            if random.random() < 0.5:
-                return RaiseAction(min_raise)
+            return RaiseAction(max_raise) # go all-in
         if CheckAction in legal_actions:  # check-call
             return CheckAction()
-        if random.random() < 0.25:
-            return FoldAction()
         return CallAction()
 
     def _simulate_game(self, my_cards, board_opp_cards, cards_reamining):
