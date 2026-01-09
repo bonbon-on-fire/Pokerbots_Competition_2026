@@ -1,7 +1,14 @@
-'''
+"""
 Simple example pokerbot, written in Python.
-'''
-from skeleton.actions import FoldAction, CallAction, CheckAction, RaiseAction, DiscardAction
+"""
+
+from skeleton.actions import (
+    FoldAction,
+    CallAction,
+    CheckAction,
+    RaiseAction,
+    DiscardAction,
+)
 from skeleton.states import GameState, TerminalState, RoundState
 from skeleton.states import NUM_ROUNDS, STARTING_STACK, BIG_BLIND, SMALL_BLIND
 from skeleton.bot import Bot
@@ -11,12 +18,14 @@ import random
 
 
 class Player(Bot):
-    '''
+    """
     A pokerbot.
-    '''
+    """
+    count = 0
+    wins = 0
 
     def __init__(self):
-        '''
+        """
         Called when a new game starts. Called exactly once.
 
         Arguments:
@@ -24,11 +33,11 @@ class Player(Bot):
 
         Returns:
         Nothing.
-        '''
+        """
         pass
 
     def handle_new_round(self, game_state, round_state, active):
-        '''
+        """
         Called when a new round starts. Called NUM_ROUNDS times.
 
         Arguments:
@@ -38,8 +47,10 @@ class Player(Bot):
 
         Returns:
         Nothing.
-        '''
-        my_bankroll = game_state.bankroll  # the total number of chips you've gained or lost from the beginning of the game to the start of this round
+        """
+        my_bankroll = (
+            game_state.bankroll
+        )  # the total number of chips you've gained or lost from the beginning of the game to the start of this round
         # the total number of seconds your bot has left to play this game
         game_clock = game_state.game_clock
         round_num = game_state.round_num  # the round number from 1 to NUM_ROUNDS
@@ -48,7 +59,7 @@ class Player(Bot):
         pass
 
     def handle_round_over(self, game_state, terminal_state, active):
-        '''
+        """
         Called when a round ends. Called NUM_ROUNDS times.
 
         Arguments:
@@ -58,17 +69,17 @@ class Player(Bot):
 
         Returns:
         Nothing.
-        '''
+        """
         my_delta = terminal_state.deltas[active]  # your bankroll change from this round
         previous_state = terminal_state.previous_state  # RoundState before payoffs
         street = previous_state.street  # 0,2,3,4,5,6 representing when this round ended
         my_cards = previous_state.hands[active]  # your cards
         # opponent's cards or [] if not revealed
-        opp_cards = previous_state.hands[1-active]
+        opp_cards = previous_state.hands[1 - active]
         pass
 
     def get_action(self, game_state, round_state, active):
-        '''
+        """
         Where the magic happens - your code should implement this function.
         Called any time the engine needs an action from your bot.
 
@@ -79,8 +90,10 @@ class Player(Bot):
 
         Returns:
         Your action.
-        '''
-        legal_actions = round_state.legal_actions()  # the actions you are allowed to take
+        """
+        legal_actions = (
+            round_state.legal_actions()
+        )  # the actions you are allowed to take
         # 0, 3, 4, or 5 representing pre-flop, flop, turn, or river respectively
         street = round_state.street
         my_cards = round_state.hands[active]  # your cards
@@ -88,12 +101,14 @@ class Player(Bot):
         # the number of chips you have contributed to the pot this round of betting
         my_pip = round_state.pips[active]
         # the number of chips your opponent has contributed to the pot this round of betting
-        opp_pip = round_state.pips[1-active]
+        opp_pip = round_state.pips[1 - active]
         # the number of chips you have remaining
         my_stack = round_state.stacks[active]
         # the number of chips your opponent has remaining
-        opp_stack = round_state.stacks[1-active]
-        continue_cost = opp_pip - my_pip  # the number of chips needed to stay in the pot
+        opp_stack = round_state.stacks[1 - active]
+        continue_cost = (
+            opp_pip - my_pip
+        )  # the number of chips needed to stay in the pot
         # the number of chips you have contributed to the pot
         my_contribution = STARTING_STACK - my_stack
         # the number of chips your opponent has contributed to the pot
@@ -117,6 +132,31 @@ class Player(Bot):
             return FoldAction()
         return CallAction()
 
+    def _simulate_game(self, my_cards, board_opp_cards, cards_reamining):
+        for i in range(board_opp_cards):
 
-if __name__ == '__main__':
-    run_bot(Player(), parse_args())
+
+    def _calc_winning_prob(self, my_cards, board_cards):
+        num_cards_remaining = 52 - len(my_cards) - len(board_cards)
+
+        cards_reamining = []
+        with open("python_skeleton/cards.txt", "r") as f:
+            for line in f:
+                card = line.strip()
+                if card not in my_cards and card not in board_cards:
+                    cards_reamining.append(card)
+        # print(cards_reamining)
+        # print(len(cards_reamining))
+        # print(num_cards_remaining)
+
+        self.count = 0
+        self.wins = 0
+
+        self._simulate_game(my_cards, board_cards, cards_reamining)
+        
+
+
+if __name__ == "__main__":
+    debug = Player()
+    # debug._calc_winning_prob(["As", "Kd"], ["2c", "3d", "5h"])
+    # run_bot(Player(), parse_args())
