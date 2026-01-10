@@ -2,33 +2,27 @@
 Simple example pokerbot, written in Python.
 """
 
+import os
+from dotenv import load_dotenv
+import openai
+import random
+
 from skeleton.actions import (
+    FoldAction,
     CallAction,
     CheckAction,
-    FoldAction,
     RaiseAction,
     DiscardAction,
 )
+from skeleton.states import GameState, TerminalState, RoundState
+from skeleton.states import NUM_ROUNDS, STARTING_STACK, BIG_BLIND, SMALL_BLIND
 from skeleton.bot import Bot
 from skeleton.runner import parse_args, run_bot
-from skeleton.states import (
-    BIG_BLIND,
-    NUM_ROUNDS,
-    SMALL_BLIND,
-    STARTING_STACK,
-    GameState,
-    RoundState,
-    TerminalState,
-)
 
-# Set to True if you want to use GPT-4 to generate responses,
-# and False if you want to manually input responses.
-USE_GPT = False
 
-if USE_GPT:
-    import openai
-
-    openai.api_key = "ENTER OPENAI API KEY!"
+# Load environment variables from .env file
+load_dotenv()
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
 
 def chat(messages):
@@ -96,7 +90,6 @@ class Player(Bot):
             {"role": "assistant", "content": ASSISTANT_AGREES},
         ]
         self.new_message = ""
-        self.is_gpt = False
 
     def handle_new_round(self, game_state, round_state, active):
         """
@@ -110,16 +103,15 @@ class Player(Bot):
         Returns:
         Nothing.
         """
-        game_clock = (
-            game_state.game_clock
-        )  # the total number of seconds your bot has left to play this game
-
+        my_bankroll = (
+            game_state.bankroll
+        )  # the total number of chips you've gained or lost from the beginning of the game to the start of this round
+        # the total number of seconds your bot has left to play this game
+        game_clock = game_state.game_clock
+        round_num = game_state.round_num  # the round number from 1 to NUM_ROUNDS
+        my_cards = round_state.hands[active]  # your cards
         big_blind = bool(active)  # True if you are the big blind
-        print(
-            "================================NEW ROUND==================================="
-        )
-        print("You are", "big blind!" if big_blind else "small blind!")
-        self.new_message = "You are " + ("big blind!" if big_blind else "small blind!")
+        pass
 
     def handle_round_over(self, game_state, terminal_state, active):
         """
@@ -135,31 +127,23 @@ class Player(Bot):
         """
         my_delta = terminal_state.deltas[active]  # your bankroll change from this round
         previous_state = terminal_state.previous_state  # RoundState before payoffs
-        opp_cards = previous_state.hands[
-            1 - active
-        ]  # opponent's cards or [] if not revealed
-        print()
-        if opp_cards:
-            print("Your opponent revealed", ", ".join(opp_cards))
-            self.new_message += " Your opponent revealed " + ", ".join(opp_cards) + "."
+        street = previous_state.street  # 0,2,3,4,5,6 representing when this round ended
+        my_cards = previous_state.hands[active]  # your cards
+        # opponent's cards or [] if not revealed
+        opp_cards = previous_state.hands[1 - active]
 
-        print("This round, your bankroll changed by", str(my_delta) + "!")
+        if opp_cards:
+            self.new_message += " Your opponent revealed " + ", ".join(opp_cards) + "."
 
         self.new_message += (
             " This round, your bankroll changed by "
             + str(my_delta)
             + "! Onto the next round - Say yes to continue."
         )
-        print()
 
-        if self.is_gpt:
-            self.messages.append({"role": "user", "content": self.new_message})
-            response = chat(self.messages)
-            self.messages.append({"role": "assistant", "content": response})
-
-        ask = input("Press enter to continue, or q to quit!\n")
-        if ask in ["q", "quit", "Quit"]:
-            exit()
+        self.messages.append({"role": "user", "content": self.new_message})
+        response = chat(self.messages)
+        self.messages.append({"role": "assistant", "content": response})
 
     def get_action(self, game_state, round_state, active):
         """
@@ -174,32 +158,28 @@ class Player(Bot):
         Returns:
         Your action.
         """
-        # May be useful, but you may choose to not use.
         legal_actions = (
             round_state.legal_actions()
         )  # the actions you are allowed to take
+        # 0, 3, 4, or 5 representing pre-flop, flop, turn, or river respectively
         street = round_state.street
         my_cards = round_state.hands[active]  # your cards
         board_cards = round_state.board  # the board cards
-        my_pip = round_state.pips[
-            active
-        ]  # the number of chips you have contributed to the pot this round of betting
-        opp_pip = round_state.pips[
-            1 - active
-        ]  # the number of chips your opponent has contributed to the pot this round of betting
-        my_stack = round_state.stacks[active]  # the number of chips you have remaining
-        opp_stack = round_state.stacks[
-            1 - active
-        ]  # the number of chips your opponent has remaining
+        # the number of chips you have contributed to the pot this round of betting
+        my_pip = round_state.pips[active]
+        # the number of chips your opponent has contributed to the pot this round of betting
+        opp_pip = round_state.pips[1 - active]
+        # the number of chips you have remaining
+        my_stack = round_state.stacks[active]
+        # the number of chips your opponent has remaining
+        opp_stack = round_state.stacks[1 - active]
         continue_cost = (
             opp_pip - my_pip
         )  # the number of chips needed to stay in the pot
-        my_contribution = (
-            STARTING_STACK - my_stack
-        )  # the number of chips you have contributed to the pot
-        opp_contribution = (
-            STARTING_STACK - opp_stack
-        )  # the number of chips your opponent has contributed to the pot
+        # the number of chips you have contributed to the pot
+        my_contribution = STARTING_STACK - my_stack
+        # the number of chips your opponent has contributed to the pot
+        opp_contribution = STARTING_STACK - opp_stack
 
         # Street description for display
         street_names = {
@@ -212,28 +192,20 @@ class Player(Bot):
         }
         current_street = street_names.get(street, f"Street {street}")
 
-        print()
-        print(f"=== {current_street} ===")
-        print("Your current cards are:", ", ".join(my_cards))
         self.new_message += " Your current cards are: " + ", ".join(my_cards) + "."
         if board_cards:
-            print("The community cards are:", ", ".join(board_cards))
             self.new_message += (
                 " The community cards are: " + ", ".join(board_cards) + "."
             )
         else:
-            print("There are no community cards yet.")
             self.new_message += " There are no community cards yet."
 
-        print("Your current contribution to the pot is", my_contribution)
         self.new_message += (
             " Your current contribution to the pot is " + str(my_contribution) + "."
         )
-        print("Your remaining stack is", my_stack)
         self.new_message += " Your remaining stack is " + str(my_stack) + "."
 
         if my_contribution != 1 and continue_cost > 0:
-            print("Your opponent raised by", continue_cost)
             self.new_message += " Your opponent raised by " + str(continue_cost) + "."
 
         poss_actions = "Your legal actions are: "
@@ -248,7 +220,6 @@ class Player(Bot):
             poss_actions += "Call, "
         if CheckAction in legal_actions:
             poss_actions += "Check, "
-        print(poss_actions[:-2] + ".\n")
         self.new_message += " " + poss_actions[:-2] + "."
 
         if RaiseAction in legal_actions:
@@ -257,61 +228,21 @@ class Player(Bot):
             )  # the smallest and largest numbers of chips for a legal bet/raise
             min_cost = min_raise - my_pip  # the cost of a minimum bet/raise
             max_cost = max_raise - my_pip  # the cost of a maximum bet/raise
-            print(f"Raise bounds: {min_raise} to {max_raise}")
 
-        if DiscardAction in legal_actions:
-            print("You must discard one card. Cards are indexed 0, 1, 2.")
-            for i, card in enumerate(my_cards):
-                print(f"  {i}: {card}")
-
-        if self.is_gpt:
-            self.messages.append({"role": "user", "content": self.new_message})
-            response = chat(self.messages)
-            self.messages.append({"role": "assistant", "content": response})
-            print("GPT-4:", response)
-            response = response.split()
-            if len(response) == 1:
-                act = response[0]
-            elif len(response) == 2:
-                act, num = response
-                num = int(num)
-            else:
-                print("Error: GPT gave too many words.")
-                exit()
-            self.new_message = ""
+        self.messages.append({"role": "user", "content": self.new_message})
+        response = chat(self.messages)
+        self.messages.append({"role": "assistant", "content": response})
+        print("GPT-4:", response)
+        response = response.split()
+        if len(response) == 1:
+            act = response[0]
+        elif len(response) == 2:
+            act, num = response
+            num = int(num)
         else:
-            user_input = input("Enter your move:\n")
-            act = None
-            num = None
-            while act is None:
-                parts = user_input.split(" ")
-                if parts[0] in ["Quit", "quit", "q"]:
-                    exit()
-                if len(parts) != 1 and len(parts) != 2:
-                    user_input = input("Too many words. Re-enter move: \n")
-                elif len(parts) == 1:
-                    act = parts[0].capitalize()
-                    if act not in ["Check", "Fold", "Call"]:
-                        act = None
-                        user_input = input(
-                            "One-word moves are only Check, Fold and Call. Re-enter move: \n"
-                        )
-                else:
-                    act, num = parts
-                    act = act.capitalize()
-                    if act not in ["Raise", "Discard"]:
-                        act = None
-                        user_input = input(
-                            "Two-word moves are only Raise and Discard. Re-enter move: \n"
-                        )
-                    else:
-                        try:
-                            num = int(num)
-                        except ValueError:
-                            act = None
-                            user_input = input(
-                                "Integer not entered for Raise/Discard. Enter new move: \n"
-                            )
+            print("Error: GPT gave too many words.")
+            exit()
+        self.new_message = ""
 
         if act == "Raise":
             return RaiseAction(num)
@@ -326,4 +257,9 @@ class Player(Bot):
 
 
 if __name__ == "__main__":
+    # test = Player()
+    # my_cards = ["Ah", "Kd"]
+    # board_cards = ["Ts", "Jd", "9h"]
+    # prob = test._calc_winning_prob(my_cards, board_cards)
+    # print(f"Winning probability: {prob:.4f}")
     run_bot(Player(), parse_args())
