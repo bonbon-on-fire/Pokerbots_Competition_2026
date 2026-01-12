@@ -174,6 +174,9 @@ class Player(Bot):
         Returns:
         Your action.
         """
+        print("game_state: ", game_state)
+        print("round_state: ", round_state)
+        print("active: ", active)
         # May be useful, but you may choose to not use.
         legal_actions = (
             round_state.legal_actions()

@@ -147,7 +147,7 @@ class Player(Bot):
 
     RANKS = "23456789TJQKA"
     SUITS = "hdcs"
-    MC_ITERATIONS = 200
+    MC_ITERATIONS = 100
 
     def full_deck(self):
         return [r + s for r in self.RANKS for s in self.SUITS]

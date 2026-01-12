@@ -146,6 +146,7 @@ class Player(Bot):
         self.messages.append({"role": "assistant", "content": response})
 
     def get_action(self, game_state, round_state, active):
+        # print("Getting action gpt_bot")
         """
         Where the magic happens - your code should implement this function.
         Called any time the engine needs an action from your bot.

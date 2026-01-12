@@ -272,9 +272,11 @@ class RoundState(
             )  # if active folds, the other player (1 - active) wins
             return TerminalState([delta, -delta], self)
         if isinstance(action, CallAction):
-            if self.button == 0:  # sb calls bb
+            # Check if small blind is calling big blind (pre-flop, active player has only SMALL_BLIND)
+            if self.street == 0 and self.pips[active] == SMALL_BLIND:
+                # sb calls bb - both players now have BIG_BLIND in the pot
                 return RoundState(
-                    1,
+                    self.button + 1,
                     0,
                     [BIG_BLIND] * 2,
                     [STARTING_STACK - BIG_BLIND] * 2,
@@ -417,7 +419,10 @@ class Player:
                     def enqueue_output(out, queue):
                         try:
                             for line in out:
-                                if self.path == r"./player_chatbot":
+                                if (
+                                    self.path == r"./player_chatbot"
+                                    or self.path == r"./match_replay_chatbot"
+                                ):
                                     print(line.strip().decode("utf-8"))
                                 else:
                                     queue.put(line)
@@ -433,7 +438,10 @@ class Player:
                     # block until we timeout or the player connects
                     client_socket, _ = server_socket.accept()
                     with client_socket:
-                        if self.path == r"./player_chatbot":
+                        if (
+                            self.path == r"./player_chatbot"
+                            or self.path == r"./match_replay_chatbot"
+                        ):
                             client_socket.settimeout(PLAYER_TIMEOUT)
                         else:
                             client_socket.settimeout(CONNECT_TIMEOUT)
@@ -461,7 +469,10 @@ class Player:
                 print("Could not close socket connection with", self.name)
         if self.bot_subprocess is not None:
             try:
-                if self.path == r"./player_chatbot":
+                if (
+                    self.path == r"./player_chatbot"
+                    or self.path == r"./match_replay_chatbot"
+                ):
                     outs, _ = self.bot_subprocess.communicate(timeout=PLAYER_TIMEOUT)
                 else:
                     outs, _ = self.bot_subprocess.communicate(timeout=CONNECT_TIMEOUT)
@@ -523,7 +534,10 @@ class Player:
                 self.socketfile.flush()
                 clause = self.socketfile.readline().strip()
                 end_time = time.perf_counter()
-                if ENFORCE_GAME_CLOCK and self.path != r"./player_chatbot":
+                if ENFORCE_GAME_CLOCK and (
+                    self.path != r"./player_chatbot"
+                    or self.path != r"./match_replay_chatbot"
+                ):
                     self.game_clock -= end_time - start_time
                 if self.game_clock <= 0.0:
                     raise socket.timeout
@@ -579,6 +593,11 @@ class Game:
         self.ev_preflop_bets = {PLAYER_1_NAME: 0, PLAYER_2_NAME: 0}
         self.ev_flop_bets = {PLAYER_1_NAME: 0, PLAYER_2_NAME: 0}
         self.ev_turn_bets = {PLAYER_1_NAME: 0, PLAYER_2_NAME: 0}
+        # Track if match replay is being used
+        self.is_match_replay = (
+            "match_replay" in PLAYER_1_PATH.lower()
+            or "match_replay" in PLAYER_2_PATH.lower()
+        )
 
     def log_round_state(self, players, round_state):
         """
@@ -610,12 +629,21 @@ class Game:
                 - self.preflop_bets[players[1].name],
             }
 
-        if round_state.street == 0 and round_state.button == 0:
+        if round_state.street == 0 and round_state.previous_state is None:
+            # Log blinds based on round_state.pips (which player has small/big blind)
+            if round_state.pips[0] == SMALL_BLIND:
+                small_blind_index = 0
+                big_blind_index = 1
+            else:
+                small_blind_index = 1
+                big_blind_index = 0
+            small_blind_player = players[small_blind_index]
+            big_blind_player = players[big_blind_index]
             self.log.append(
-                "{} posts the blind of {}".format(players[0].name, SMALL_BLIND)
+                "{} posts the blind of {}".format(small_blind_player.name, SMALL_BLIND)
             )
             self.log.append(
-                "{} posts the blind of {}".format(players[1].name, BIG_BLIND)
+                "{} posts the blind of {}".format(big_blind_player.name, BIG_BLIND)
             )
             self.log.append(
                 "{} dealt {}".format(players[0].name, PCARDS(round_state.hands[0]))
@@ -623,16 +651,17 @@ class Game:
             self.log.append(
                 "{} dealt {}".format(players[1].name, PCARDS(round_state.hands[1]))
             )
-            self.player_messages[0] = [
+            # Set 'P' clause to reflect small/big blind: P0 = small blind, P1 = big blind
+            self.player_messages[small_blind_index] = [
                 "T0.",
                 "P0",
-                "H" + CCARDS(round_state.hands[0]),
+                "H" + CCARDS(round_state.hands[small_blind_index]),
                 "G",
             ]
-            self.player_messages[1] = [
+            self.player_messages[big_blind_index] = [
                 "T0.",
                 "P1",
-                "H" + CCARDS(round_state.hands[1]),
+                "H" + CCARDS(round_state.hands[big_blind_index]),
                 "G",
             ]
         elif (
@@ -705,11 +734,83 @@ class Game:
         """
         deck = pkrbot.Deck()
         deck.shuffle()
-        hands = [deck.deal(3), deck.deal(3)]
+        
+        # Get hands from user input if match_replay is active
+        if self.is_match_replay:
+            hands = [[], []]
+            all_dealt_cards_set = set()
+            for i, player in enumerate(players):
+                while True:
+                    user_input = input(
+                        f"Please enter {player.name}'s 3 cards (format: card1 card2 card3, e.g., Ah Kd 2s): "
+                    ).strip()
+                    try:
+                        cards = [card.strip() for card in user_input.split(" ")]
+                        if len(cards) != 3:
+                            print("Please enter exactly 3 cards separated by spaces.")
+                            continue
+                        
+                        # Validate card format and check for duplicates
+                        valid_cards = []
+                        for card in cards:
+                            if len(card) != 2:
+                                raise ValueError(f"Invalid card format: {card}")
+                            rank, suit = card[0], card[1]
+                            if rank not in "23456789TJQKA" or suit not in "hdcs":
+                                raise ValueError(f"Invalid card: {card}")
+                            if card in all_dealt_cards_set:
+                                raise ValueError(f"Duplicate card: {card}")
+                            all_dealt_cards_set.add(card)
+                            valid_cards.append(card)
+                        
+                        hands[i] = valid_cards
+                        break
+                    except ValueError as e:
+                        print(f"Error: {e}. Please try again.")
+                    except Exception:
+                        print("Invalid input. Please enter cards in format: card1,card2,card3 (e.g., Ah,Kd,2s)")
+        else:
+            hands = [deck.deal(3), deck.deal(3)]
+        
         board = []
-        pips = [SMALL_BLIND, BIG_BLIND]
-        stacks = [STARTING_STACK - SMALL_BLIND, STARTING_STACK - BIG_BLIND]
-        round_state = RoundState(0, 0, pips, stacks, hands, deck, board, None)
+        # Determine which player is small blind for this round
+        if self.is_match_replay:
+            print(f"Is match replay: {self.is_match_replay}")
+            # Ask user which player should be small blind this round
+            while True:
+                user_input = (
+                    input(
+                        f"Please enter which player is small blind for this round ({players[0].name} or {players[1].name}): "
+                    )
+                    .strip()
+                    .upper()
+                )
+                if user_input == players[0].name.upper():
+                    small_blind_index = 0
+                    break
+                elif user_input == players[1].name.upper():
+                    small_blind_index = 1
+                    break
+                else:
+                    print(
+                        f"Invalid input. Please enter '{players[0].name}' or '{players[1].name}'."
+                    )
+        else:
+            # Default: player[0] is small blind
+            small_blind_index = 0
+        # print(f"Small blind index: {small_blind_index}")
+        # Set blinds based on small_blind_index
+        pips = [0, 0]
+        stacks = [STARTING_STACK, STARTING_STACK]
+        pips[small_blind_index] = SMALL_BLIND
+        pips[1 - small_blind_index] = BIG_BLIND
+        stacks[small_blind_index] = STARTING_STACK - SMALL_BLIND
+        stacks[1 - small_blind_index] = STARTING_STACK - BIG_BLIND
+        # Start with button = small_blind_index so the small blind acts first
+        round_state = RoundState(
+            small_blind_index, 0, pips, stacks, hands, deck, board, None
+        )
+
         while not isinstance(round_state, TerminalState):
             self.log_round_state(players, round_state)
             active = round_state.button % 2
