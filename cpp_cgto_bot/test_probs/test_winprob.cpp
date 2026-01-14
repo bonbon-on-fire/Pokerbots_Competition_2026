@@ -1,7 +1,7 @@
-#include <skeleton/actions.h>
-#include <skeleton/constants.h>
-#include <skeleton/runner.h>
-#include <skeleton/states.h>
+// Test program to calculate win probabilities for comparison with Python version
+// Compile: g++ -std=c++17 -I. -I./include -I./libs/skeleton/include test_winprob.cpp -o test_winprob
+// Run: ./test_winprob
+
 #include <bitmask_tables.h>
 #include <iostream>
 #include <iomanip>
@@ -11,17 +11,14 @@
 #include <algorithm>
 #include <random>
 #include <map>
-#include <time.h>
 
-using namespace pokerbots::skeleton;
-
+// Copy Bot struct from main.cpp for testing
 struct HandRank {
-  std::vector<int> rankTuple;  // The lexicographically comparable tuple
-  int category;  // 0-8 representing hand category
+  std::vector<int> rankTuple;
+  int category;
 
   HandRank(std::vector<int> tuple, int cat) : rankTuple(std::move(tuple)), category(cat) {}
 
-  // Comparison operators for lexicographic comparison
   bool operator>(const HandRank& other) const {
     // Python compares tuples lexicographically: compare elements first
     size_t minSize = std::min(rankTuple.size(), other.rankTuple.size());
@@ -47,7 +44,7 @@ struct HandRank {
   }
 };
 
-struct Bot {
+struct TestBot {
   static constexpr int MC_ITERATIONS = 100;
   static constexpr const char* SUITS = "hdcs";
   
@@ -55,10 +52,9 @@ struct Bot {
   std::random_device rd;
   std::mt19937 gen;
 
-  Bot() : gen(rd()) {
+  TestBot() : gen(rd()) {
   }
 
-  // Helper to count bits (C++20 has std::popcount, but for compatibility we'll use this)
   int bitCount(unsigned int x) const {
     int count = 0;
     while (x) {
@@ -68,7 +64,6 @@ struct Bot {
     return count;
   }
 
-  // Get suit index: h=0, d=1, c=2, s=3
   int getSuitIndex(char suit) const {
     switch (suit) {
       case 'h': return 0;
@@ -84,7 +79,6 @@ struct Bot {
     std::array<int, 4> suitMasks = {0};
     int rankMask = 0;
 
-    // Build masks
     for (const auto& card : cards) {
       char rank = card[0];
       char suit = card[1];
@@ -96,7 +90,7 @@ struct Bot {
       rankMask |= (1 << rankIdx);
     }
 
-    // ---------- 1. STRAIGHT FLUSH ----------
+    // STRAIGHT FLUSH
     for (int suit = 0; suit < 4; ++suit) {
       int sm = suitMasks[suit];
       if (bitCount(sm) >= 5) {
@@ -108,7 +102,7 @@ struct Bot {
       }
     }
 
-    // ---------- 2. FOUR OF A KIND ----------
+    // FOUR OF A KIND
     int quad = -1;
     int kicker = -1;
     for (int r = 12; r >= 0; --r) {
@@ -122,7 +116,7 @@ struct Bot {
       return HandRank({7, quad, kicker}, 7);
     }
 
-    // ---------- 3. FULL HOUSE ----------
+    // FULL HOUSE
     std::vector<int> trips;
     std::vector<int> pairs;
     for (int r = 12; r >= 0; --r) {
@@ -140,7 +134,7 @@ struct Bot {
       }
     }
 
-    // ---------- 4. FLUSH ----------
+    // FLUSH
     for (int suit = 0; suit < 4; ++suit) {
       int sm = suitMasks[suit];
       if (bitCount(sm) >= 5) {
@@ -158,14 +152,14 @@ struct Bot {
       }
     }
 
-    // ---------- 5. STRAIGHT ----------
+    // STRAIGHT
     for (const auto& [mask, high] : STRAIGHT_MASKS) {
       if ((rankMask & mask) == mask) {
         return HandRank({4, high}, 4);
       }
     }
 
-    // ---------- 6. THREE OF A KIND ----------
+    // THREE OF A KIND
     if (!trips.empty()) {
       int trip = trips[0];
       std::vector<int> kickers;
@@ -181,7 +175,7 @@ struct Bot {
       return HandRank(rankTuple, 3);
     }
 
-    // ---------- 7. TWO PAIR ----------
+    // TWO PAIR
     if (pairs.size() >= 2) {
       int highPair = pairs[0];
       int lowPair = pairs[1];
@@ -195,7 +189,7 @@ struct Bot {
       return HandRank({2, highPair, lowPair, kicker}, 2);
     }
 
-    // ---------- 8. ONE PAIR ----------
+    // ONE PAIR
     if (!pairs.empty()) {
       int pair = pairs[0];
       std::vector<int> kickers;
@@ -211,7 +205,7 @@ struct Bot {
       return HandRank(rankTuple, 1);
     }
 
-    // ---------- 9. HIGH CARD ----------
+    // HIGH CARD
     std::vector<int> kickers;
     for (int r = 12; r >= 0; --r) {
       if (rankCounts[r] > 0) {
@@ -225,7 +219,6 @@ struct Bot {
     return HandRank(rankTuple, 0);
   }
 
-  // Compare hands: returns {win_value (1, 0.5, or 0), opponent_rank_category}
   std::pair<double, int> compareHands(const std::vector<std::string>& p1Cards,
                                       const std::vector<std::string>& p2Cards) const {
     HandRank p1Rank = bestHandRank8(p1Cards);
@@ -242,7 +235,6 @@ struct Bot {
     return {value, p2Rank.category};
   }
 
-  // Monte Carlo simulation for discard selection
   std::pair<double, int> mcOnce(const std::vector<std::string>& myCards,
                                  const std::vector<std::string>& boardCards,
                                  int discardIdx) {
@@ -260,7 +252,6 @@ struct Bot {
       newBoard.push_back(myCards[discardIdx]);
     }
 
-    // Use remaining deck
     std::vector<std::string> deck = REMAINING_DECK;
     std::shuffle(deck.begin(), deck.end(), gen);
 
@@ -286,26 +277,6 @@ struct Bot {
     return compareHands(myHand, oppHand);
   }
 
-  int chooseDiscardMc(const std::vector<std::string>& myCards,
-                      const std::vector<std::string>& boardCards) {
-    std::array<double, 3> wins = {0, 0, 0};
-
-    for (int i = 0; i < 3; ++i) {
-      for (int iter = 0; iter < MC_ITERATIONS; ++iter) {
-        auto [value, rank] = mcOnce(myCards, boardCards, i);
-        wins[i] += value;
-      }
-    }
-
-    int bestIdx = 0;
-    for (int i = 1; i < 3; ++i) {
-      if (wins[i] > wins[bestIdx]) {
-        bestIdx = i;
-      }
-    }
-    return bestIdx;
-  }
-
   double calcWinningProb(const std::vector<std::string>& myCards,
                         const std::vector<std::string>& boardCards,
                         int street) {
@@ -323,168 +294,78 @@ struct Bot {
     total = (street <= 3) ? MC_ITERATIONS : total;
     return wins / MC_ITERATIONS;
   }
+};
 
-  /*
-    Called when a new round starts. Called NUM_ROUNDS times.
-  */
-  void handleNewRound(GameInfoPtr gameState, RoundStatePtr roundState, int active) {
-    // Reset deck for new round
-    REMAINING_DECK.clear();
+int main() {
+  TestBot bot;
+  
+  struct TestCase {
+    std::vector<std::string> myCards;
+    std::vector<std::string> boardCards;
+    int street;
+    std::string description;
+  };
+  
+  std::vector<TestCase> testCases = {
+    {{"Ah", "Kh", "Qh"}, {}, 0, "Pre-flop with premium hand"},
+    {{"Ah", "Kh", "Qh"}, {"Jh", "Th"}, 2, "Flop with straight flush draw"},
+    {{"As", "Ks", "Qs"}, {"Ac", "Kc", "Qc", "Jc"}, 5, "Turn with two pair"},
+    {{"2h", "3h", "4h"}, {"5h", "6h"}, 2, "Flop with low straight"},
+    {{"Ah", "Ad", "As"}, {}, 0, "Pre-flop with three aces"},
+  };
+  
+  std::cout << "C++ Win Probability Test Results:" << std::endl;
+  std::cout << std::string(80, '=') << std::endl;
+  
+  for (const auto& test : testCases) {
+    // Initialize deck
+    bot.REMAINING_DECK.clear();
     for (const char* r = RANKS; *r; ++r) {
-      for (const char* s = SUITS; *s; ++s) {
+      for (const char* s = bot.SUITS; *s; ++s) {
         std::string card;
         card += *r;
         card += *s;
-        REMAINING_DECK.push_back(card);
-      }
-    }
-  }
-
-  /*
-    Called when a round ends. Called NUM_ROUNDS times.
-  */
-  void handleRoundOver(GameInfoPtr gameState, TerminalStatePtr terminalState, int active) {
-    // Nothing needed here
-  }
-
-  /*
-    Where the magic happens - your code should implement this function.
-  */
-  Action getAction(GameInfoPtr gameState, RoundStatePtr roundState, int active) {
-    auto legalActions = roundState->legalActions();
-    int street = roundState->street;
-    auto myCards = roundState->hands[active];
-    auto boardCards = roundState->board;
-    int myPip = roundState->pips[active];
-    int oppPip = roundState->pips[1 - active];
-    int myStack = roundState->stacks[active];
-    int oppStack = roundState->stacks[1 - active];
-    int continueCost = oppPip - myPip;
-    int myContribution = STARTING_STACK - myStack;
-    int oppContribution = STARTING_STACK - oppStack;
-
-    // Deck management - remove known cards
-    if (street == 0) {
-      // Pre-flop: remove my cards
-      REMAINING_DECK.clear();
-      for (const char* r = RANKS; *r; ++r) {
-        for (const char* s = SUITS; *s; ++s) {
-          std::string card;
-          card += *r;
-          card += *s;
-          bool isMyCard = false;
-          for (const auto& c : myCards) {
-            if (c == card) {
-              isMyCard = true;
-              break;
-            }
+        bool isMyCard = false;
+        for (const auto& c : test.myCards) {
+          if (c == card) {
+            isMyCard = true;
+            break;
           }
-          if (!isMyCard) {
-            REMAINING_DECK.push_back(card);
-          }
+        }
+        if (!isMyCard) {
+          bot.REMAINING_DECK.push_back(card);
         }
       }
     }
-    if (street == 2) {
-      // Flop is revealed - remove board cards
-      for (const auto& c : boardCards) {
-        REMAINING_DECK.erase(
-          std::remove(REMAINING_DECK.begin(), REMAINING_DECK.end(), c),
-          REMAINING_DECK.end()
-        );
-      }
-    }
-    if (street == 3) {
-      // After first discard - remove the newly discarded card
-      if (!boardCards.empty()) {
-        REMAINING_DECK.erase(
-          std::remove(REMAINING_DECK.begin(), REMAINING_DECK.end(), boardCards.back()),
-          REMAINING_DECK.end()
-        );
-      }
-    }
-    if (street == 4) {
-      // After second discard - remove the newly discarded card
-      if (!boardCards.empty()) {
-        REMAINING_DECK.erase(
-          std::remove(REMAINING_DECK.begin(), REMAINING_DECK.end(), boardCards.back()),
-          REMAINING_DECK.end()
-        );
-      }
-    }
-    if (street == 5) {
-      // Turn is revealed
-      if (!boardCards.empty()) {
-        REMAINING_DECK.erase(
-          std::remove(REMAINING_DECK.begin(), REMAINING_DECK.end(), boardCards.back()),
-          REMAINING_DECK.end()
-        );
-      }
-    }
-    if (street == 6) {
-      // River is revealed
-      if (!boardCards.empty()) {
-        REMAINING_DECK.erase(
-          std::remove(REMAINING_DECK.begin(), REMAINING_DECK.end(), boardCards.back()),
-          REMAINING_DECK.end()
-        );
-      }
-    }
-
-    // Handle DISCARD action
-    if (legalActions.find(Action::Type::DISCARD) != legalActions.end()) {
-      int discardIdx = chooseDiscardMc(myCards, boardCards);
-      return {Action::Type::DISCARD, 0, discardIdx};
-    }
-
-    // Calculate win probability and EV
-    double winProbability = calcWinningProb(myCards, boardCards, street);
-    double ev = winProbability * (myContribution + oppContribution) -
-                (1 - winProbability) * continueCost;
-
-    // EV negative - fold or check
-    if (ev < 0) {
-      if (legalActions.find(Action::Type::CHECK) != legalActions.end()) {
-        return {Action::Type::CHECK};
-      }
-      return {Action::Type::FOLD};
-    }
-
-    // EV positive - consider raising
-    if (legalActions.find(Action::Type::RAISE) != legalActions.end()) {
-      // play conservatively by calling
-      if (legalActions.find(Action::Type::CALL) != legalActions.end()) {
-        return {Action::Type::CALL};
-      }
-
-      // fallback raise
-      auto raiseBounds = roundState->raiseBounds();
-      int minRaise = raiseBounds[0];
-      int maxRaise = raiseBounds[1];
-      int raiseVal = (int)std::min(
-        (double)maxRaise,
-        3.0 * winProbability * (myContribution + oppContribution)
+    
+    // Remove board cards
+    for (const auto& card : test.boardCards) {
+      bot.REMAINING_DECK.erase(
+        std::remove(bot.REMAINING_DECK.begin(), bot.REMAINING_DECK.end(), card),
+        bot.REMAINING_DECK.end()
       );
-      
-      return {Action::Type::RAISE, std::max(minRaise, raiseVal)};
     }
-
-    // Fallback
-    if (legalActions.find(Action::Type::CHECK) != legalActions.end()) {
-      return {Action::Type::CHECK};
+    
+    double winProb = bot.calcWinningProb(test.myCards, test.boardCards, test.street);
+    
+    std::cout << test.description << std::endl;
+    std::cout << "  Cards: [";
+    for (size_t i = 0; i < test.myCards.size(); ++i) {
+      std::cout << test.myCards[i];
+      if (i < test.myCards.size() - 1) std::cout << " ";
     }
-    if (legalActions.find(Action::Type::CALL) != legalActions.end()) {
-      return {Action::Type::CALL};
+    std::cout << "], Board: [";
+    for (size_t i = 0; i < test.boardCards.size(); ++i) {
+      std::cout << test.boardCards[i];
+      if (i < test.boardCards.size() - 1) std::cout << " ";
     }
-    return {Action::Type::FOLD};
+    std::cout << "], Street: " << test.street << std::endl;
+    std::cout << "  Win probability: " << std::fixed << std::setprecision(6) 
+              << winProb << std::endl << std::endl;
   }
-};
-
-/*
-  Main program for running a C++ pokerbot.
-*/
-int main(int argc, char* argv[]) {
-  auto [host, port] = parseArgs(argc, argv);
-  runBot<Bot>(host, port);
+  
+  std::cout << std::string(80, '=') << std::endl;
+  
   return 0;
 }
+

@@ -168,20 +168,23 @@ class Player(Bot):
 
         # ev positive
         if RaiseAction in legal_actions:
+            # play conservatively by calling
+            if CallAction in legal_actions:
+                return CallAction() 
+            # if CheckAction in legal_actions: # extra conservative
+            #     return CheckAction()
+            
+            # fallback raise
             min_raise, max_raise = round_state.raise_bounds()
             raise_val = int(
                 min(
                     max_raise,
-                    # 0.75
-                    # * (win_probability * (my_contribution + opp_contribution))
-                    # / (1 - win_probability),
-                    3 * win_probability * (my_contribution + opp_contribution),
+                    # 0.75 * (win_probability * (my_contribution + opp_contribution)) / (1 - win_probability),
+                    2 * win_probability * (my_contribution + opp_contribution),
                 )
             )
-            if CallAction in legal_actions:
-                return CallAction()
 
-            return RaiseAction(max(min_raise, raise_val))  # fallback
+            return RaiseAction(max(min_raise, raise_val)) # fallback raise
             # return RaiseAction(max(min_raise, continue_cost))
 
         # fallback
@@ -244,7 +247,7 @@ class Player(Bot):
         # return self.hand_strength(my_hand) > self.hand_strength(opp_hand)
 
         increase = self.compare_hands(my_hand, opp_hand)
-        print(increase)
+        # print(increase)
         return increase
 
     def choose_discard_mc(self, my_cards, board_cards):
@@ -418,9 +421,27 @@ class Player(Bot):
 
 
 if __name__ == "__main__":
-    # test = Player()
-    # my_cards = ["Ah", "Kd"]
-    # board_cards = ["Ts", "Jd", "9h"]
-    # prob = test._calc_winning_prob(my_cards, board_cards, street=3)
-    # print(f"Winning probability: {prob:.4f}")
+    # bot = Player()
+    # test_cases = [
+    #     (["Ah", "Kh", "Qh"], [], 0, "Pre-flop with premium hand"),
+    #     (["Ah", "Kh", "Qh"], ["Jh", "Th"], 2, "Flop with straight flush draw"),
+    #     (["As", "Ks", "Qs"], ["Ac", "Kc", "Qc", "Jc"], 5, "Turn with two pair"),
+    #     (["2h", "3h", "4h"], ["5h", "6h"], 2, "Flop with low straight"),
+    #     (["Ah", "Ad", "As"], [], 0, "Pre-flop with three aces"),
+    # ]
+    # print("Python Win Probability Test Results:")
+    # print("=" * 80)
+    # for my_cards, board_cards, street, desc in test_cases:
+    #     bot.REMAINING_DECK = [
+    #         r + s for r in bot.RANKS for s in bot.SUITS 
+    #         if r + s not in my_cards
+    #     ]
+    #     for card in board_cards:
+    #         if card in bot.REMAINING_DECK:
+    #             bot.REMAINING_DECK.remove(card)
+    #     win_prob = bot._calc_winning_prob(my_cards, board_cards, street)
+    #     print(f"{desc}")
+    #     print(f"  Cards: {my_cards}, Board: {board_cards}, Street: {street}")
+    #     print(f"  Win probability: {win_prob:.6f}\n")
+    # print("=" * 80)
     run_bot(Player(), parse_args())
