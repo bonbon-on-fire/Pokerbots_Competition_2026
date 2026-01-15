@@ -18,6 +18,15 @@ import random
 from bitmask_tables import STRAIGHT_MASK_SET, STRAIGHT_MASKS, RANK_TO_INDEX
 from itertools import combinations
 
+def _popcount(x: int) -> int:
+    """
+    Compatibility popcount for older Python versions where int.bit_count() may not exist.
+    """
+    try:
+        return x.bit_count()  # Python 3.8+
+    except AttributeError:
+        return bin(x).count("1")
+
 
 class Player(Bot):
     """
@@ -180,7 +189,7 @@ class Player(Bot):
                 min(
                     max_raise,
                     # 0.75 * (win_probability * (my_contribution + opp_contribution)) / (1 - win_probability),
-                    2 * win_probability * (my_contribution + opp_contribution),
+                    3 * win_probability * (my_contribution + opp_contribution),
                 )
             )
 
@@ -202,7 +211,7 @@ class Player(Bot):
     SUITS_DICT = {"h": 0, "d": 1, "c": 2, "s": 3}
 
     SUITS = "hdcs"
-    MC_ITERATIONS = 100
+    MC_ITERATIONS = 150
 
     # def full_deck(self):
     #     return [r + s for r in self.RANKS for s in self.SUITS]
@@ -285,7 +294,8 @@ class Player(Bot):
         # ---------- 1. STRAIGHT FLUSH ----------
         for suit in range(4):
             sm = suit_masks[suit]
-            if sm.bit_count() >= 5:
+            # if sm.bit_count() >= 5:
+            if _popcount(sm) >= 5:
                 for mask, high in STRAIGHT_MASKS.items():
                     if sm & mask == mask:
                         return [(8, high), 8]
@@ -318,7 +328,8 @@ class Player(Bot):
         # ---------- 4. FLUSH ----------
         for suit in range(4):
             sm = suit_masks[suit]
-            if sm.bit_count() >= 5:
+            # if sm.bit_count() >= 5:
+            if _popcount(sm) >= 5:
                 kickers = [r for r in range(12, -1, -1) if sm & (1 << r)]
                 return [(5, kickers[:5]), 5]
 

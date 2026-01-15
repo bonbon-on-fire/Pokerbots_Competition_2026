@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.8)
 
 # Replace "cpp-pokerbot" with your bot's name
-project(cpp-pokerbot)
+project(cpp_cgto_bot)
 
 set(CMAKE_CXX_STANDARD 17)
 
