@@ -2,7 +2,7 @@
 # DO NOT REMOVE OR RENAME THIS FILE
 PLAYER_1_NAME = "A"
 # Change this to './player_chatbot' to interact with your own bot!
-PLAYER_1_PATH = "./conditional_gto_bot"
+PLAYER_1_PATH = "./cpp_cgto_bot"
 # NO TRAILING SLASHES ARE ALLOWED IN PATHS
 PLAYER_2_NAME = "B"
 PLAYER_2_PATH = "./python_vibe_bot"

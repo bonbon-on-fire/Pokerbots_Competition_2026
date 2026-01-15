@@ -286,77 +286,91 @@ class Player(Bot):
         my_stack = round_state.stacks[active]
         opp_stack = round_state.stacks[1 - active]
 
-        continue_cost = opp_pip - my_pip
-        _my_contribution = STARTING_STACK - my_stack
-        _opp_contribution = STARTING_STACK - opp_stack
+        continue_cost = opp_pip - my_pip  # chips needed to call
 
-        # 1) Discard / toss phase
+        # ---------- 1) DISCARD ----------
         if DiscardAction in legal_actions:
             idx = self.choose_discard_index(my_cards, board_cards)
             return DiscardAction(idx)
 
-        # 2) Preflop (street == 0)
+        # Helper: choose a raise size (simple for now)
+        def raise_to_amount(strength_tier):
+            min_raise, max_raise = round_state.raise_bounds()
+
+            # Default: minimum raise
+            amt = min_raise
+
+            # Aggressive mode / strong hands: bump sizing a bit if allowed
+            if self.mode == "a" and strength_tier in (1, 2):
+                amt = min(max_raise, min_raise + 2 * BIG_BLIND)
+
+            return amt
+
+        # ---------- 2) PREFLOP (street 0) ----------
         if street == 0:
-            tier, _best_pair_idx = self.preflop_tier(my_cards)
+            tier, best_pair_idx = self.preflop_tier(my_cards)
 
-            # If no bet to call: check or raise
+            # If it's free (no bet to call)
             if continue_cost == 0:
+                # Strong hands: raise when possible
                 if tier == 1 and RaiseAction in legal_actions:
-                    min_raise, _ = round_state.raise_bounds()
-                    return RaiseAction(min_raise)
+                    return RaiseAction(raise_to_amount(tier))
 
+                # Tier 2: mix raise/check based on mode
                 if tier == 2 and RaiseAction in legal_actions:
-                    min_raise, _ = round_state.raise_bounds()
-                    p_raise = 0.65 if self.mode == "a" else 0.35
-                    if random.random() < p_raise:
-                        return RaiseAction(min_raise)
-
-                if CheckAction in legal_actions:
-                    return CheckAction()
-                return CallAction()
-
-            # Facing a bet: fold/call/raise
-            if tier == 4 and FoldAction in legal_actions:
-                return FoldAction()
-
-            if tier == 3:
-                # "call once, fold more often to pressure" (a rough first cut)
-                if (
-                    self.mode == "p"
-                    and random.random() < 0.35
-                    and FoldAction in legal_actions
-                ):
-                    return FoldAction()
-                return CallAction()
-
-            if tier == 2:
-                if RaiseAction in legal_actions:
-                    min_raise, _ = round_state.raise_bounds()
                     p_raise = 0.55 if self.mode == "a" else 0.25
                     if random.random() < p_raise:
-                        return RaiseAction(min_raise)
-                return CallAction()
+                        return RaiseAction(raise_to_amount(tier))
 
-            # tier == 1
-            if RaiseAction in legal_actions:
-                min_raise, _ = round_state.raise_bounds()
-                return RaiseAction(min_raise)
+                # Otherwise just take the free check
+                if CheckAction in legal_actions:
+                    return CheckAction()
+
+                # If no check exists, call (rare)
+                if CallAction in legal_actions:
+                    return CallAction()
+
+            # If facing a bet (must respond)
+            else:
+                cheap = continue_cost <= 2 * BIG_BLIND
+
+                if tier == 4:
+                    if FoldAction in legal_actions:
+                        return FoldAction()
+                    return CallAction()
+
+                if tier == 3:
+                    # Call cheap bets more, fold more when passive and expensive
+                    if not cheap and self.mode == "p" and FoldAction in legal_actions:
+                        return FoldAction()
+                    return CallAction()
+
+                if tier == 2:
+                    # Mostly call; raise more in aggressive mode (esp if cheap)
+                    if RaiseAction in legal_actions:
+                        p_raise = 0.50 if (self.mode == "a" and cheap) else 0.20
+                        if random.random() < p_raise:
+                            return RaiseAction(raise_to_amount(tier))
+                    return CallAction()
+
+                if tier == 1:
+                    # Strong: raise if possible, else call
+                    if RaiseAction in legal_actions:
+                        return RaiseAction(raise_to_amount(tier))
+                    return CallAction()
+
+        # ---------- 3) Fallback for later streets (temporary) ----------
+        # Until we implement real flop/turn/river betting:
+        if continue_cost == 0 and CheckAction in legal_actions:
+            return CheckAction()
+
+        # If it's cheap, continue; otherwise fold more when passive
+        if continue_cost <= 2 * BIG_BLIND:
             return CallAction()
 
-        # 3) Postflop fallback (conservative placeholder)
-        # We'll replace this later with "made hand / draw / board texture" logic.
-        if continue_cost == 0:
-            if CheckAction in legal_actions:
-                return CheckAction()
-            # If check isn't legal (rare), call.
-            return CallAction()
+        if self.mode == "p" and FoldAction in legal_actions:
+            return FoldAction()
 
-        # Facing a bet postflop: be cautious for now
-        if FoldAction in legal_actions and continue_cost > 0:
-            # passive folds more; aggressive calls more
-            p_fold = 0.55 if self.mode == "p" else 0.35
-            if random.random() < p_fold:
-                return FoldAction()
         return CallAction()
 
 
