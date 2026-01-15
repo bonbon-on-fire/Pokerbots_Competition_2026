@@ -158,6 +158,87 @@ class Player(Bot):
 
         return best_pair_tier, best_pair_idx
 
+    def _core_value(self, c1, c2):
+        """
+        Convert your core tier (1 best .. 4 worst) into a numeric value.
+        Bigger is better.
+        """
+        tier = self.core_tier(c1, c2)
+        return {1: 120, 2: 90, 3: 60, 4: 20}[tier]
+
+    def _board_penalty_after_discard(self, tossed_card, board_cards):
+        """
+        Penalize discards that make the shared board scarier / more useful to opponent.
+        board_cards is whatever is currently public (usually 2 cards at discard time).
+        """
+        tr, ts = self.parse_card(tossed_card)
+
+        board_ranks = []
+        board_suits = []
+        for bc in board_cards:
+            r, s = self.parse_card(bc)
+            board_ranks.append(r)
+            board_suits.append(s)
+
+        penalty = 0.0
+
+        if tr in board_ranks:
+            penalty += 35.0
+        if ts in board_suits:
+            penalty += 12.0
+
+        for br in board_ranks:
+            d = abs(tr - br)
+            if d == 1:
+                penalty += 10.0
+            elif d == 2:
+                penalty += 6.0
+            elif d == 3:
+                penalty += 3.0
+
+        penalty += max(0, tr - 10) * 1.5
+
+        return penalty
+
+    def choose_discard_index(self, my_cards, board_cards):
+        """
+        Decide which of the 3 hole cards to discard to the board.
+
+        Strategy:
+        - maximize kept 2-card core value
+        - minimize how much the tossed card strengthens/coordinates the public board
+        """
+        best_idx = 0
+        best_score = -1e9
+
+        for toss_idx in range(3):
+            tossed = my_cards[toss_idx]
+            kept = [my_cards[i] for i in range(3) if i != toss_idx]
+
+            keep_value = self._core_value(kept[0], kept[1])
+            board_penalty = self._board_penalty_after_discard(tossed, board_cards)
+
+            score = keep_value - board_penalty
+
+            if score > best_score:
+                best_score = score
+                best_idx = toss_idx
+
+        mix_p = 0.12 if self.mode == "a" else 0.05
+        if random.random() < mix_p:
+            scores = []
+            for toss_idx in range(3):
+                tossed = my_cards[toss_idx]
+                kept = [my_cards[i] for i in range(3) if i != toss_idx]
+                keep_value = self._core_value(kept[0], kept[1])
+                board_penalty = self._board_penalty_after_discard(tossed, board_cards)
+                scores.append((keep_value - board_penalty, toss_idx))
+            scores.sort(reverse=True)
+            if len(scores) > 1:
+                return scores[1][1]
+
+        return best_idx
+
     def choose_discard_index(self, my_cards, board_cards):
         """
         Discard/toss decision (simple first version):
