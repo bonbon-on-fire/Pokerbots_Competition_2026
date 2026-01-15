@@ -33,7 +33,7 @@ class Player(Bot):
         Nothing.
         """
 
-        self.mode_p = 0.65  # probablity of playing passively (CUSTOMIZE)
+        self.mode_p = 0.65
         self.mode = "p"
 
         pass
@@ -52,17 +52,7 @@ class Player(Bot):
         Nothing.
         """
 
-        my_bankroll = game_state.bankroll  # the total number of chips you've gained or lost from the beginning of the game to the start of this round
-        # the total number of seconds your bot has left to play this game
-        game_clock = game_state.game_clock
-        round_num = game_state.round_num  # the round number from 1 to NUM_ROUNDS
-        my_cards = round_state.hands[active]  # your cards
-        big_blind = bool(active)  # True if you are the big blind
-
-        if random.random() < self.mode_p:
-            self.mode = "p"
-        else:
-            self.mode = "a"
+        self.mode = "p" if random.random() < self.mode_p else "a"
 
         pass
 
@@ -79,13 +69,6 @@ class Player(Bot):
         Nothing.
         """
 
-        my_delta = terminal_state.deltas[active]  # your bankroll change from this round
-        previous_state = terminal_state.previous_state  # RoundState before payoffs
-        street = previous_state.street  # 0,2,3,4,5,6 representing when this round ended
-        my_cards = previous_state.hands[active]  # your cards
-        # opponent's cards or [] if not revealed
-        opp_cards = previous_state.hands[1 - active]
-
         pass
 
     def parse_card(self, card):
@@ -95,7 +78,6 @@ class Player(Bot):
 
         rank = card[0]
         suit = card[1]
-
         rank_map = {
             "2": 2,
             "3": 3,
@@ -111,74 +93,93 @@ class Player(Bot):
             "K": 13,
             "A": 14,
         }
+
         return rank_map[rank], suit
 
     def core_tier(self, c1, c2):
         """
         Tier a 2-card core from pre-flop cards.
+        Tier 1 (raise): TT+ OR AK/AQ/KQ OR strong suited OR top suited connectors.
+        Tier 2 (raise/call): 66–99 OR suited aces (Axs) OR other broadways (AT/KJ/QJ/JT) OR suited connectors 76s+.
+        Tier 3 (call/fold): 22–55 OR weak suited hands OR “one decent high card + junk” that can continue cheaply.
+        Tier 4 (fold): low offsuit, unconnected hands with no pair/draw plan.
         """
-
         r1, s1 = self.parse_card(c1)
         r2, s2 = self.parse_card(c2)
         hi, lo = max(r1, r2), min(r1, r2)
-        score = 0
+        suited = s1 == s2
+        gap = hi - lo
 
-        # Pair is highest ranked
         if r1 == r2:
             if hi >= 10:
-                return
-            return score
+                return 1
+            if hi >= 6:
+                return 2
+            return 3
 
-        def highcard_bonus(rank):
-            if rank >= 11:
-                return 6  # bonus for J or higher (CUSTOMIZE)
-            elif rank >= 9:
-                return 2  # bonus for 9 or 10 (CUSTOMIZE)
-            else:
-                return 0
+        def is_broadway(r):
+            return r >= 10
 
-        # High card bonus
-        score += highcard_bonus(c1) + highcard_bonus(c2)
-        score += hi * 1.2  # weight for high card (CUSTOMIZE)
-        score += lo * 0.8  # weight for low card (CUSTOMIZE)
+        broadway = is_broadway(r1) and is_broadway(r2)
 
-        # Suitedness bonus
-        if s1 == s2:
-            score += 5  # bonus for suited (CUSTOMIZE)
+        if (hi, lo) in [(14, 13), (14, 12), (13, 12)]:
+            return 1
+        if suited and broadway and lo >= 11:
+            return 1
+        if suited and gap == 1 and lo >= 11:
+            return 1
 
-        # Connectedness bonus
-        gap = hi - lo
-        if gap <= 1:
-            score += 7  # bonus for connected or one-gap (CUSTOMIZE)
-        elif gap == 2:
-            score += 4  # bonus for two-gap (CUSTOMIZE)
-        elif gap == 3:
-            score += 1  # bonus for three-gap (CUSTOMIZE)
+        if hi == 14 and suited:
+            return 2
+        if broadway:
+            return 2
+        if suited and gap == 1 and lo >= 6:
+            return 2
 
-        # Ace high bonus
-        if hi == 14:
-            score += 7  # bonus for Ace high (CUSTOMIZE)
-            if s1 == s2 and lo >= 10:
-                score += 4  # bonus for Ace suited with 10 or higher (CUSTOMIZE)
-            elif s1 == s2:
-                score += 2  # bonus for Ace suited with lower card (CUSTOMIZE)
+        if suited:
+            return 3
+        if hi >= 10 and lo >= 7:
+            return 3
 
-        return score
+        return 4
 
-    def preflop_tier(self, c1, c2):
+    def preflop_tier(self, my_cards):
         """
         Evaluate all (3 choose 2) 2-card cores from 3-card hand and return tier.
         Tier 1 is best, Tier 4 is worst.
         """
 
         cores = [
-            ((0, 1), self.core_tier(c1, c2)),
-            ((0, 2), self.core_tier(c1, c2)),
-            ((1, 2), self.core_tier(c1, c2)),
+            ((0, 1), self.core_tier(my_cards[0], my_cards[1])),
+            ((0, 2), self.core_tier(my_cards[0], my_cards[2])),
+            ((1, 2), self.core_tier(my_cards[1], my_cards[2])),
         ]
         best_pair_idx, best_pair_tier = min(cores, key=lambda x: x[1])
 
         return best_pair_tier, best_pair_idx
+
+    def choose_discard_index(self, my_cards, board_cards):
+        """
+        Discard/toss decision (simple first version):
+        Try discarding each card; keep the remaining 2-card private core with the best tier.
+        If tie, keep the higher-ranked private cards (very mild tie-break).
+        """
+
+        def core_key(ca, cb):
+            t = self.core_tier(ca, cb)
+            ra, _ = self.parse_card(ca)
+            rb, _ = self.parse_card(cb)
+            hi, lo = max(ra, rb), min(ra, rb)
+            return (t, -hi, -lo)
+
+        candidates = []
+        for k in (0, 1, 2):
+            kept = [my_cards[i] for i in (0, 1, 2) if i != k]
+            key = core_key(kept[0], kept[1])
+            candidates.append((key, k))
+
+        _, best_k = min(candidates, key=lambda x: x[0])
+        return best_k
 
     def get_action(self, game_state, round_state, active):
         """
@@ -194,50 +195,88 @@ class Player(Bot):
         Your action.
         """
 
-        legal_actions = (
-            round_state.legal_actions()
-        )  # the actions you are allowed to take
-        # 0, 3, 4, or 5 representing pre-flop, flop, turn, or river respectively
+        legal_actions = round_state.legal_actions()
         street = round_state.street
-        my_cards = round_state.hands[active]  # your cards
-        board_cards = round_state.board  # the board cards
-        # the number of chips you have contributed to the pot this round of betting
+        my_cards = round_state.hands[active]
+        board_cards = round_state.board
+
         my_pip = round_state.pips[active]
-        # the number of chips your opponent has contributed to the pot this round of betting
         opp_pip = round_state.pips[1 - active]
-        # the number of chips you have remaining
         my_stack = round_state.stacks[active]
-        # the number of chips your opponent has remaining
         opp_stack = round_state.stacks[1 - active]
-        continue_cost = (
-            opp_pip - my_pip
-        )  # the number of chips needed to stay in the pot
-        # the number of chips you have contributed to the pot
-        my_contribution = STARTING_STACK - my_stack
-        # the number of chips your opponent has contributed to the pot
-        opp_contribution = STARTING_STACK - opp_stack
 
-        # Only use DiscardAction if it's in legal_actions (which already checks street)
-        # legal_actions() returns DiscardAction only when street is 2 or 3
+        continue_cost = opp_pip - my_pip
+        _my_contribution = STARTING_STACK - my_stack
+        _opp_contribution = STARTING_STACK - opp_stack
+
+        # 1) Discard / toss phase
         if DiscardAction in legal_actions:
-            # Always discards the first card in the bot's hand
-            return DiscardAction(0)
-        if RaiseAction in legal_actions:
-            # the smallest and largest numbers of chips for a legal bet/raise
-            min_raise, max_raise = round_state.raise_bounds()
-            min_cost = min_raise - my_pip  # the cost of a minimum bet/raise
-            max_cost = max_raise - my_pip  # the cost of a maximum bet/raise
-            if random.random() < 0.5:
-                return RaiseAction(min_raise)
-        if CheckAction in legal_actions:  # check-call
-            return CheckAction()
-        if random.random() < 0.25:
-            return FoldAction()
-        return CallAction()
+            idx = self.choose_discard_index(my_cards, board_cards)
+            return DiscardAction(idx)
 
-        # Pre-flop decision logic
+        # 2) Preflop (street == 0)
         if street == 0:
-            tier, core_idxs, core_score = self._preflop_tier(my_cards)
+            tier, _best_pair_idx = self.preflop_tier(my_cards)
+
+            # If no bet to call: check or raise
+            if continue_cost == 0:
+                if tier == 1 and RaiseAction in legal_actions:
+                    min_raise, _ = round_state.raise_bounds()
+                    return RaiseAction(min_raise)
+
+                if tier == 2 and RaiseAction in legal_actions:
+                    min_raise, _ = round_state.raise_bounds()
+                    p_raise = 0.65 if self.mode == "a" else 0.35
+                    if random.random() < p_raise:
+                        return RaiseAction(min_raise)
+
+                if CheckAction in legal_actions:
+                    return CheckAction()
+                return CallAction()
+
+            # Facing a bet: fold/call/raise
+            if tier == 4 and FoldAction in legal_actions:
+                return FoldAction()
+
+            if tier == 3:
+                # "call once, fold more often to pressure" (a rough first cut)
+                if (
+                    self.mode == "p"
+                    and random.random() < 0.35
+                    and FoldAction in legal_actions
+                ):
+                    return FoldAction()
+                return CallAction()
+
+            if tier == 2:
+                if RaiseAction in legal_actions:
+                    min_raise, _ = round_state.raise_bounds()
+                    p_raise = 0.55 if self.mode == "a" else 0.25
+                    if random.random() < p_raise:
+                        return RaiseAction(min_raise)
+                return CallAction()
+
+            # tier == 1
+            if RaiseAction in legal_actions:
+                min_raise, _ = round_state.raise_bounds()
+                return RaiseAction(min_raise)
+            return CallAction()
+
+        # 3) Postflop fallback (conservative placeholder)
+        # We'll replace this later with "made hand / draw / board texture" logic.
+        if continue_cost == 0:
+            if CheckAction in legal_actions:
+                return CheckAction()
+            # If check isn't legal (rare), call.
+            return CallAction()
+
+        # Facing a bet postflop: be cautious for now
+        if FoldAction in legal_actions and continue_cost > 0:
+            # passive folds more; aggressive calls more
+            p_fold = 0.55 if self.mode == "p" else 0.35
+            if random.random() < p_fold:
+                return FoldAction()
+        return CallAction()
 
 
 if __name__ == "__main__":
