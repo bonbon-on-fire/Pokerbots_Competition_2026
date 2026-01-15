@@ -189,7 +189,8 @@ class Player(Bot):
                 min(
                     max_raise,
                     # 0.75 * (win_probability * (my_contribution + opp_contribution)) / (1 - win_probability),
-                    3 * win_probability * (my_contribution + opp_contribution),
+                    # 3 * win_probability * (my_contribution + opp_contribution),
+                    win_probability * (my_contribution + opp_contribution)
                 )
             )
 
@@ -372,7 +373,7 @@ class Player(Bot):
         p2_rank = self.best_hand_rank_8(p2_cards)
 
         value = 1 if p1_rank[0] > p2_rank[0] else 0.5 if p1_rank[0] == p2_rank[0] else 0
-        return [value, p2_rank[1]]
+        return [value, p1_rank[1], p2_rank[1]]
 
     def _calc_winning_prob(self, my_cards, board_cards, street=0):
         """
@@ -417,7 +418,7 @@ class Player(Bot):
             increase = self.mc_once(my_cards, board_cards, discard_idx=-1)
 
             wins += increase[0] if (increase[1] != 0 or street <= 3) else 0
-            total += 1 if (increase[1] != 0 or street <= 3) else 0
+            total += 1 if ((increase[1]-increase[2]) <= (6 - street + 1) or street <= 3) else 0
 
             # # Compare hand strengths
             # if self.hand_strength(my_hand) > self.hand_strength(opp_hand):
