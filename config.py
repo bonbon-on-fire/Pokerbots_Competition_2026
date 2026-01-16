@@ -6,7 +6,7 @@ PLAYER_1_NAME = "A"
 PLAYER_1_PATH = "./gto_bot"
 # NO TRAILING SLASHES ARE ALLOWED IN PATHS
 PLAYER_2_NAME = "B"
-PLAYER_2_PATH = "./conditional_gto_bot (1)"
+PLAYER_2_PATH = "./python_vibe_bot"
 # PLAYER_2_PATH = "./cpp_cgto_bot"
 # GAME PROGRESS IS RECORDED HERE
 GAME_LOG_FILENAME = "gamelog"
