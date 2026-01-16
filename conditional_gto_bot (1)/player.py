@@ -18,6 +18,7 @@ import random
 from bitmask_tables import STRAIGHT_MASK_SET, STRAIGHT_MASKS, RANK_TO_INDEX
 from itertools import combinations
 
+
 def _popcount(x: int) -> int:
     """
     Compatibility popcount for older Python versions where int.bit_count() may not exist.
@@ -179,22 +180,22 @@ class Player(Bot):
         if RaiseAction in legal_actions:
             # play conservatively by calling
             if CallAction in legal_actions:
-                return CallAction() 
+                return CallAction()
             # if CheckAction in legal_actions: # extra conservative
             #     return CheckAction()
-            
+
             # fallback raise
             min_raise, max_raise = round_state.raise_bounds()
             raise_val = int(
                 min(
                     max_raise,
                     # 0.75 * (win_probability * (my_contribution + opp_contribution)) / (1 - win_probability),
-                    # 3 * win_probability * (my_contribution + opp_contribution),
-                    win_probability * (my_contribution + opp_contribution)
+                    3 * win_probability * (my_contribution + opp_contribution),
+                    # my_contribution + opp_contribution
                 )
             )
 
-            return RaiseAction(max(min_raise, raise_val)) # fallback raise
+            return RaiseAction(max(min_raise, raise_val))  # fallback raise
             # return RaiseAction(max(min_raise, continue_cost))
 
         # fallback
@@ -417,8 +418,10 @@ class Player(Bot):
 
             increase = self.mc_once(my_cards, board_cards, discard_idx=-1)
 
-            wins += increase[0] if (increase[1] != 0 or street <= 3) else 0
-            total += 1 if ((increase[1]-increase[2]) <= (6 - street + 1) or street <= 3) else 0
+            if increase[1] - increase[2] <= 6 - street:
+                print("increase:", increase)
+                wins += increase[0]
+                total += 1
 
             # # Compare hand strengths
             # if self.hand_strength(my_hand) > self.hand_strength(opp_hand):
@@ -435,17 +438,17 @@ class Player(Bot):
 if __name__ == "__main__":
     # bot = Player()
     # test_cases = [
-    #     (["Ah", "Kh", "Qh"], [], 0, "Pre-flop with premium hand"),
-    #     (["Ah", "Kh", "Qh"], ["Jh", "Th"], 2, "Flop with straight flush draw"),
-    #     (["As", "Ks", "Qs"], ["Ac", "Kc", "Qc", "Jc"], 5, "Turn with two pair"),
-    #     (["2h", "3h", "4h"], ["5h", "6h"], 2, "Flop with low straight"),
-    #     (["Ah", "Ad", "As"], [], 0, "Pre-flop with three aces"),
+    #     # (["Ah", "Kh", "Qh"], [], 0, "Pre-flop with premium hand"),
+    #     # (["Ah", "Kh", "Qh"], ["Jh", "Th"], 2, "Flop with straight flush draw"),
+    #     # (["As", "Ks"], ["Ac", "Kc", "Qc", "Jc"], 4, "Turn with two pair"),
+    #     # (["2h", "3h", "4h"], ["5h", "6h"], 2, "Flop with low straight"),
+    #     (["Qs", "Jc"], ["4c", "7c", "4s", "Jh", "2c", "6h"], 6, "game replay"),
     # ]
     # print("Python Win Probability Test Results:")
     # print("=" * 80)
     # for my_cards, board_cards, street, desc in test_cases:
     #     bot.REMAINING_DECK = [
-    #         r + s for r in bot.RANKS for s in bot.SUITS 
+    #         r + s for r in bot.RANKS for s in bot.SUITS
     #         if r + s not in my_cards
     #     ]
     #     for card in board_cards:
