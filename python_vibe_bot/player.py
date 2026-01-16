@@ -286,51 +286,40 @@ class Player(Bot):
         my_stack = round_state.stacks[active]
         opp_stack = round_state.stacks[1 - active]
 
-        continue_cost = opp_pip - my_pip  # chips needed to call
+        continue_cost = opp_pip - my_pip
 
-        # ---------- 1) DISCARD ----------
         if DiscardAction in legal_actions:
             idx = self.choose_discard_index(my_cards, board_cards)
             return DiscardAction(idx)
 
-        # Helper: choose a raise size (simple for now)
         def raise_to_amount(strength_tier):
             min_raise, max_raise = round_state.raise_bounds()
 
-            # Default: minimum raise
             amt = min_raise
 
-            # Aggressive mode / strong hands: bump sizing a bit if allowed
             if self.mode == "a" and strength_tier in (1, 2):
                 amt = min(max_raise, min_raise + 2 * BIG_BLIND)
 
             return amt
 
-        # ---------- 2) PREFLOP (street 0) ----------
         if street == 0:
             tier, best_pair_idx = self.preflop_tier(my_cards)
 
-            # If it's free (no bet to call)
             if continue_cost == 0:
-                # Strong hands: raise when possible
                 if tier == 1 and RaiseAction in legal_actions:
                     return RaiseAction(raise_to_amount(tier))
 
-                # Tier 2: mix raise/check based on mode
                 if tier == 2 and RaiseAction in legal_actions:
                     p_raise = 0.55 if self.mode == "a" else 0.25
                     if random.random() < p_raise:
                         return RaiseAction(raise_to_amount(tier))
 
-                # Otherwise just take the free check
                 if CheckAction in legal_actions:
                     return CheckAction()
 
-                # If no check exists, call (rare)
                 if CallAction in legal_actions:
                     return CallAction()
 
-            # If facing a bet (must respond)
             else:
                 cheap = continue_cost <= 2 * BIG_BLIND
 
@@ -340,13 +329,11 @@ class Player(Bot):
                     return CallAction()
 
                 if tier == 3:
-                    # Call cheap bets more, fold more when passive and expensive
                     if not cheap and self.mode == "p" and FoldAction in legal_actions:
                         return FoldAction()
                     return CallAction()
 
                 if tier == 2:
-                    # Mostly call; raise more in aggressive mode (esp if cheap)
                     if RaiseAction in legal_actions:
                         p_raise = 0.50 if (self.mode == "a" and cheap) else 0.20
                         if random.random() < p_raise:
@@ -354,17 +341,13 @@ class Player(Bot):
                     return CallAction()
 
                 if tier == 1:
-                    # Strong: raise if possible, else call
                     if RaiseAction in legal_actions:
                         return RaiseAction(raise_to_amount(tier))
                     return CallAction()
 
-        # ---------- 3) Fallback for later streets (temporary) ----------
-        # Until we implement real flop/turn/river betting:
         if continue_cost == 0 and CheckAction in legal_actions:
             return CheckAction()
 
-        # If it's cheap, continue; otherwise fold more when passive
         if continue_cost <= 2 * BIG_BLIND:
             return CallAction()
 
