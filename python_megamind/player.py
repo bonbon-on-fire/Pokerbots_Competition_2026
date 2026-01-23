@@ -44,6 +44,8 @@ class Player(Bot):
         self.mode = "p"
         self._prev_street = None
         self.raises_this_street = 0
+        self._mc_cache = {}
+        self._debug = False
 
     def handle_new_round(self, game_state, round_state, active):
         """
@@ -355,6 +357,34 @@ class Player(Bot):
         discard_idx = [i for i in range(3) if i not in keep_indices][0]
         return discard_idx
 
+    def _iters_for_discard(self):
+        """
+        Choose MC iterations for discard phase.
+
+        Arguments:
+        Nothing.
+
+        Returns:
+        int iterations
+        """
+        return 40 if self.mode == "p" else 60
+
+    def _iters_for_postdiscard(self, board_len):
+        """
+        Choose MC iterations for post-discard betting based on board length.
+
+        Arguments:
+        board_len: int length of board_ids (4, 5, or 6)
+
+        Returns:
+        int iterations
+        """
+        if board_len >= 6:
+            return 120
+        if board_len == 5:
+            return 90
+        return 70
+
     def _mc_once_discard(self, my3_ids, board_ids, discard_idx, i_am_first_discarder):
         """
         Run one Monte Carlo rollout for a chosen discard.
@@ -403,6 +433,14 @@ class Player(Bot):
         opp8 = opp_hole2 + board
 
         return self.compare_hands_8(my8, opp8)
+
+    def _cache_get(self, key):
+        return self._mc_cache.get(key, None)
+
+    def _cache_set(self, key, val):
+        if len(self._mc_cache) > 5000:
+            self._mc_cache.clear()
+        self._mc_cache[key] = val
 
     def choose_discard_mc(self, my3_ids, board_ids, i_am_first_discarder, iters=None):
         """
@@ -603,9 +641,25 @@ class Player(Bot):
 
         if DiscardAction in legal_actions:
             i_am_first = len(board_ids) == 2
-            d = self.choose_discard_mc(
-                my_ids, board_ids, i_am_first_discarder=i_am_first, iters=self.MC_ITERS
+
+            iters = self._iters_for_discard()
+            cache_key = (
+                "discard",
+                tuple(sorted(my_ids)),
+                tuple(sorted(board_ids)),
+                i_am_first,
+                iters,
             )
+
+            cached = self._cache_get(cache_key)
+            if cached is None:
+                d = self.choose_discard_mc(
+                    my_ids, board_ids, i_am_first_discarder=i_am_first, iters=iters
+                )
+                self._cache_set(cache_key, d)
+            else:
+                d = cached
+
             return DiscardAction(d)
 
         if street == 0:
