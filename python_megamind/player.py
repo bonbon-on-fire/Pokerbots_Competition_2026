@@ -429,6 +429,143 @@ class Player(Bot):
 
         return max(range(3), key=lambda i: scores[i])
 
+    def _rank_from_idx(self, r_idx):
+        """
+        Convert rank index [0..12] back to rank value [2..14].
+
+        Arguments:
+        r_idx: int
+
+        Returns:
+        int rank value (2..14)
+        """
+        return r_idx + 2
+
+    def _preflop_core_tier_ids(self, cida, cidb):
+        """
+        Tier a 2-card core using card ids (preflop heuristic).
+
+        Arguments:
+        cida: int card id [0..51]
+        cidb: int card id [0..51]
+
+        Returns:
+        int tier in {1,2,3,4} where 1 is strongest
+        """
+        ra = self._rank_from_idx(CARD_RANK_IDX[cida])
+        rb = self._rank_from_idx(CARD_RANK_IDX[cidb])
+        sa = CARD_SUIT_IDX[cida]
+        sb = CARD_SUIT_IDX[cidb]
+
+        hi, lo = (ra, rb) if ra >= rb else (rb, ra)
+        suited = sa == sb
+        gap = hi - lo
+
+        if ra == rb:
+            if hi >= 10:  # TT+
+                return 1
+            if hi >= 6:  # 66-99
+                return 2
+            return 3  # 22-55
+
+        broadway = (ra >= 10) and (rb >= 10)
+
+        if (hi, lo) in [(14, 13), (14, 12), (13, 12)]:  # AK/AQ/KQ
+            return 1
+        if suited and broadway and lo >= 11:  # KQs/QJs/JTs/AKs-type
+            return 1
+        if suited and gap == 1 and lo >= 11:  # JTs+ suited connectors
+            return 1
+
+        if hi == 14 and suited:  # Axs
+            return 2
+        if broadway:  # AT/KJ/QJ/JT etc
+            return 2
+        if suited and gap == 1 and lo >= 6:  # 76s+
+            return 2
+
+        if suited:
+            return 3
+        if hi >= 10 and lo >= 7:
+            return 3
+
+        return 4
+
+    def preflop_tier(self, my3_ids):
+        """
+        Evaluate all (3 choose 2) 2-card cores from 3-card hand and return best tier.
+
+        Arguments:
+        my3_ids: list[int] length 3
+
+        Returns:
+        (best_tier, best_pair_idx)
+        best_tier: int 1..4 (1 best)
+        best_pair_idx: tuple[int,int] indices of kept core inside the 3 cards
+        """
+        cores = [
+            ((0, 1), self._preflop_core_tier_ids(my3_ids[0], my3_ids[1])),
+            ((0, 2), self._preflop_core_tier_ids(my3_ids[0], my3_ids[2])),
+            ((1, 2), self._preflop_core_tier_ids(my3_ids[1], my3_ids[2])),
+        ]
+        best_pair_idx, best_tier = min(cores, key=lambda x: x[1])
+        return best_tier, best_pair_idx
+
+    def _calc_win_prob_postdiscard(self, my2_ids, board_ids, iters):
+        """
+        Monte Carlo estimate of win probability AFTER discards (we have 2 hole cards).
+
+        Arguments:
+        my2_ids: list[int] length 2
+        board_ids: list[int] length 4,5,6
+        iters: int number of rollouts
+
+        Returns:
+        float win probability in [0,1] where tie counts as 0.5
+        """
+        known = set(my2_ids) | set(board_ids)
+        deck = [cid for cid in range(52) if cid not in known]
+
+        need_board = 6 - len(board_ids)
+        if need_board < 0:
+            need_board = 0
+
+        score = 0.0
+        for _ in range(iters):
+            draw = random.sample(deck, 2 + need_board)
+            opp2 = draw[:2]
+            future = draw[2:]
+
+            full_board = list(board_ids) + future
+            my8 = list(my2_ids) + full_board
+            opp8 = list(opp2) + full_board
+            score += self.compare_hands_8(my8, opp8)
+
+        return score / float(iters)
+
+    def _choose_raise_size(self, round_state, my_pip, win_p, mode):
+        """
+        Pick a raise size given win probability and mode.
+
+        Arguments:
+        round_state: RoundState
+        my_pip: int
+        win_p: float
+        mode: str 'p' or 'a'
+
+        Returns:
+        int raise_to amount (the pip value after raising)
+        """
+        min_raise, max_raise = round_state.raise_bounds()
+
+        if mode == "a":
+            frac = max(0.0, min(1.0, (win_p - 0.50) / 0.35))
+        else:
+            frac = max(0.0, min(1.0, (win_p - 0.55) / 0.35))
+
+        target = int(min_raise + frac * (max_raise - min_raise))
+        return max(min_raise, min(max_raise, target))
+
     def get_action(self, game_state, round_state, active):
         """
         Where the magic happens - your code should implement this function.
@@ -446,13 +583,21 @@ class Player(Bot):
         street = round_state.street
         my_cards = round_state.hands[active]
         board_cards = round_state.board
+
         my_pip = round_state.pips[active]
         opp_pip = round_state.pips[1 - active]
         my_stack = round_state.stacks[active]
         opp_stack = round_state.stacks[1 - active]
+
         continue_cost = opp_pip - my_pip
         my_contribution = STARTING_STACK - my_stack
         opp_contribution = STARTING_STACK - opp_stack
+        pot_now = my_contribution + opp_contribution
+
+        if self._prev_street != street:
+            self._prev_street = street
+            self.raises_this_street = 0
+
         my_ids = self._to_ids(my_cards)
         board_ids = self._to_ids(board_cards)
 
@@ -463,17 +608,109 @@ class Player(Bot):
             )
             return DiscardAction(d)
 
-        if RaiseAction in legal_actions:
-            min_raise, max_raise = round_state.raise_bounds()
-            min_cost = min_raise - my_pip  # the cost of a minimum bet/raise
-            max_cost = max_raise - my_pip  # the cost of a maximum bet/raise
-            if random.random() < 0.5:
-                return RaiseAction(min_raise)
-        if CheckAction in legal_actions:  # check-call
+        if street == 0:
+            tier, _best_pair = self.preflop_tier(my_ids)
+
+            if continue_cost == 0:
+                if RaiseAction in legal_actions:
+                    if tier == 1:
+                        min_raise, _ = round_state.raise_bounds()
+                        self.raises_this_street += 1
+                        return RaiseAction(min_raise)
+
+                    if tier == 2:
+                        p_raise = 0.60 if self.mode == "a" else 0.25
+                        if random.random() < p_raise:
+                            min_raise, _ = round_state.raise_bounds()
+                            self.raises_this_street += 1
+                            return RaiseAction(min_raise)
+
+                if CheckAction in legal_actions:
+                    return CheckAction()
+                return CallAction() if CallAction in legal_actions else FoldAction()
+
+            else:
+                if tier == 4 and FoldAction in legal_actions:
+                    return FoldAction()
+
+                if tier == 3:
+                    if (
+                        self.mode == "p"
+                        and random.random() < 0.35
+                        and FoldAction in legal_actions
+                    ):
+                        return FoldAction()
+                    return CallAction() if CallAction in legal_actions else FoldAction()
+
+                if tier == 2:
+                    if RaiseAction in legal_actions:
+                        p_reraise = 0.35 if self.mode == "a" else 0.10
+                        if random.random() < p_reraise:
+                            min_raise, _ = round_state.raise_bounds()
+                            self.raises_this_street += 1
+                            return RaiseAction(min_raise)
+                    return CallAction() if CallAction in legal_actions else FoldAction()
+
+                if RaiseAction in legal_actions:
+                    min_raise, _ = round_state.raise_bounds()
+                    self.raises_this_street += 1
+                    return RaiseAction(min_raise)
+                return CallAction() if CallAction in legal_actions else FoldAction()
+
+        if len(my_ids) == 2 and len(board_ids) >= 4:
+            win_p = self._calc_win_prob_postdiscard(
+                my_ids, board_ids, iters=self.MC_ITERS
+            )
+            call_ev = win_p * (pot_now + max(0, continue_cost)) - (1.0 - win_p) * max(
+                0, continue_cost
+            )
+
+            if continue_cost == 0:
+                if RaiseAction in legal_actions:
+                    bet_thresh = 0.55 if self.mode == "p" else 0.50
+                    bluff_freq = 0.03 if self.mode == "p" else 0.10
+
+                    should_value_bet = win_p >= bet_thresh
+                    should_bluff = (win_p <= 0.40) and (random.random() < bluff_freq)
+
+                    if (
+                        should_value_bet or should_bluff
+                    ) and self.raises_this_street < 2:
+                        raise_to = self._choose_raise_size(
+                            round_state, my_pip, win_p, self.mode
+                        )
+                        self.raises_this_street += 1
+                        return RaiseAction(raise_to)
+
+                return CheckAction() if CheckAction in legal_actions else CallAction()
+
+            else:
+                fold_thresh = 0.48 if self.mode == "a" else 0.52
+                if win_p < fold_thresh and FoldAction in legal_actions:
+                    return FoldAction()
+
+                if call_ev < 0 and FoldAction in legal_actions:
+                    return FoldAction()
+
+                raise_thresh = 0.62 if self.mode == "p" else 0.58
+                if (
+                    RaiseAction in legal_actions
+                    and win_p >= raise_thresh
+                    and self.raises_this_street < 2
+                ):
+                    raise_to = self._choose_raise_size(
+                        round_state, my_pip, win_p, self.mode
+                    )
+                    self.raises_this_street += 1
+                    return RaiseAction(raise_to)
+
+                return CallAction() if CallAction in legal_actions else FoldAction()
+
+        if CheckAction in legal_actions:
             return CheckAction()
-        if random.random() < 0.25:
-            return FoldAction()
-        return CallAction()
+        if CallAction in legal_actions:
+            return CallAction()
+        return FoldAction()
 
 
 if __name__ == "__main__":
