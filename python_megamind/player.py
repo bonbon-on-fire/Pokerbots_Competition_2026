@@ -14,6 +14,7 @@ from skeleton.states import NUM_ROUNDS, STARTING_STACK, BIG_BLIND, SMALL_BLIND
 from skeleton.bot import Bot
 from skeleton.runner import parse_args, run_bot
 from bitmask_tables import (
+    CARD_ID_BY_STR,
     CARD_RANK_IDX,
     CARD_SUIT_IDX,
     CARD_RANK_BIT,
@@ -116,10 +117,10 @@ class Player(Bot):
         for r in range(12, -1, -1):
             if r in exclude_ranks:
                 continue
-            if counts[r] > 0:
+            for _ in range(counts[r]):
                 out.append(r)
                 if len(out) == n:
-                    break
+                    return out
         return out
 
     def hand_rank_7(self, card_ids):
@@ -251,19 +252,107 @@ class Player(Bot):
             return 0.5
         return 0.0
 
-    def to_ids(self, card_strs):
+    def hand_rank_8(self, card_ids):
+        """
+        Evaluate an 8-card hand by taking the best 7-card subset.
+
+        Arguments:
+        card_ids: list[int] length 8
+
+        Returns:
+        tuple comparable rank (bigger is better)
+        """
+        best = None
+        for drop in range(8):
+            seven = card_ids[:drop] + card_ids[drop + 1 :]
+            r = self.hand_rank_7(seven)
+            if best is None or r > best:
+                best = r
+        return best
+
+    def compare_hands_8(self, my8, opp8):
+        """
+        Compare two 8-card hands.
+
+        Arguments:
+        my8: list[int] length 8
+        opp8: list[int] length 8
+
+        Returns:
+        float 1.0 win, 0.5 tie, 0.0 loss
+        """
+        a = self.hand_rank_8(my8)
+        b = self.hand_rank_8(opp8)
+        if a > b:
+            return 1.0
+        if a == b:
+            return 0.5
+        return 0.0
+
+    def _to_ids(self, card_strs):
         """
         Convert a list of card strings into card ids.
 
         Arguments:
-        - card_strs: list[str] of cards like ['Ah','Td','2c']
+        - card_strs: list[str] of cards like ['Ah','Td','2c'].
 
         Returns:
-        - list[int] card ids in [0,51]
+        - list[int] card ids in [0, 51].
         """
-        from bitmask_tables import CARD_ID_BY_STR
-
         return [CARD_ID_BY_STR[c] for c in card_strs]
+
+    def _remaining_deck(self, known_ids):
+        """
+        Build a list of available card ids excluding known cards.
+
+        Arguments:
+        - known_ids: set[int] of card ids already seen/used.
+
+        Returns:
+        - list[int] of remaining card ids.
+        """
+        return [cid for cid in range(52) if cid not in known_ids]
+
+    def _draw_n(self, deck, n):
+        """
+        Draw n distinct cards uniformly at random from a deck list.
+
+        Arguments:
+        - deck: list[int] card ids remaining.
+        - n: int number of cards to draw.
+
+        Returns:
+        - list[int] of length n (distinct).
+        """
+        return random.sample(deck, n)
+
+    def _opp_choose_discard_simple(self, opp3_ids, board_ids):
+        """
+        Choose which of opponent's 3 hole cards they discard (simple heuristic).
+
+        Arguments:
+        opp3_ids: list[int] length 3
+        board_ids: list[int] current board ids (after our discard may be shown)
+
+        Returns:
+        int index in [0,2] to discard
+        """
+        ranks = [CARD_RANK_IDX[c] for c in opp3_ids]
+
+        best_keep = None
+        for i in range(3):
+            keep = [j for j in range(3) if j != i]
+            r1, r2 = ranks[keep[0]], ranks[keep[1]]
+            hi, lo = (r1, r2) if r1 >= r2 else (r2, r1)
+            pair_bonus = 100 if r1 == r2 else 0
+            score = pair_bonus + hi * 2 + lo
+            cand = (score, tuple(keep))
+            if best_keep is None or cand > best_keep:
+                best_keep = cand
+
+        keep_indices = best_keep[1]
+        discard_idx = [i for i in range(3) if i not in keep_indices][0]
+        return discard_idx
 
     def get_action(self, game_state, round_state, active):
         """
@@ -289,8 +378,8 @@ class Player(Bot):
         continue_cost = opp_pip - my_pip
         my_contribution = STARTING_STACK - my_stack
         opp_contribution = STARTING_STACK - opp_stack
-        my_ids = self.to_ids(my_cards)
-        board_ids = self.to_ids(board_cards)
+        my_ids = self._to_ids(my_cards)
+        board_ids = self._to_ids(board_cards)
 
         if DiscardAction in legal_actions:
             return DiscardAction(0)
