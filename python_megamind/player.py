@@ -39,7 +39,8 @@ class Player(Bot):
         Returns:
         Nothing.
         """
-        self.mode_p = 0.65
+        self.MC_ITERS = 200  # switch
+        self.mode_p = 0.65  # switch
         self.mode = "p"
         self._prev_street = None
         self.raises_this_street = 0
@@ -354,6 +355,80 @@ class Player(Bot):
         discard_idx = [i for i in range(3) if i not in keep_indices][0]
         return discard_idx
 
+    def _mc_once_discard(self, my3_ids, board_ids, discard_idx, i_am_first_discarder):
+        """
+        Run one Monte Carlo rollout for a chosen discard.
+
+        Arguments:
+        my3_ids: list[int] length 3 (our pre-discard hole)
+        board_ids: list[int] current board (len 2 if we discard first; len 3 if opp already discarded)
+        discard_idx: int in [0,2] which of our 3 to discard to board
+        i_am_first_discarder: bool
+
+        Returns:
+        float 1.0 win, 0.5 tie, 0.0 loss
+        """
+        known = set(my3_ids) | set(board_ids)
+        deck = self._remaining_deck(known)
+
+        my_discard = my3_ids[discard_idx]
+        my_hole2 = [my3_ids[i] for i in range(3) if i != discard_idx]
+        board = list(board_ids) + [my_discard]
+
+        if i_am_first_discarder:
+            opp3 = self._draw_n(self._remaining_deck(set(board) | set(my_hole2)), 3)
+            opp_disc_idx = self._opp_choose_discard_simple(opp3, board)
+            opp_discard = opp3[opp_disc_idx]
+            opp_hole2 = [opp3[i] for i in range(3) if i != opp_disc_idx]
+            board.append(opp_discard)
+        else:
+            opp_hole2 = self._draw_n(
+                self._remaining_deck(set(board) | set(my_hole2)), 2
+            )
+
+            if len(board) == 3:
+                extra = self._draw_n(
+                    self._remaining_deck(set(board) | set(my_hole2) | set(opp_hole2)), 1
+                )[0]
+                board.append(extra)
+
+        need = 6 - len(board)
+        if need > 0:
+            fill = self._draw_n(
+                self._remaining_deck(set(board) | set(my_hole2) | set(opp_hole2)), need
+            )
+            board.extend(fill)
+
+        my8 = my_hole2 + board
+        opp8 = opp_hole2 + board
+
+        return self.compare_hands_8(my8, opp8)
+
+    def choose_discard_mc(self, my3_ids, board_ids, i_am_first_discarder, iters=None):
+        """
+        Choose discard index by Monte Carlo win/tie score.
+
+        Arguments:
+        my3_ids: list[int] length 3
+        board_ids: list[int] current board (len 2 or 3)
+        i_am_first_discarder: bool
+        iters: int MC iterations per discard option (optional)
+
+        Returns:
+        int discard index 0/1/2
+        """
+        if iters is None:
+            iters = self.MC_ITERS if hasattr(self, "MC_ITERS") else 200
+
+        scores = [0.0, 0.0, 0.0]
+        for d in range(3):
+            s = 0.0
+            for _ in range(iters):
+                s += self._mc_once_discard(my3_ids, board_ids, d, i_am_first_discarder)
+            scores[d] = s
+
+        return max(range(3), key=lambda i: scores[i])
+
     def get_action(self, game_state, round_state, active):
         """
         Where the magic happens - your code should implement this function.
@@ -382,7 +457,12 @@ class Player(Bot):
         board_ids = self._to_ids(board_cards)
 
         if DiscardAction in legal_actions:
-            return DiscardAction(0)
+            i_am_first = len(board_ids) == 2
+            d = self.choose_discard_mc(
+                my_ids, board_ids, i_am_first_discarder=i_am_first, iters=self.MC_ITERS
+            )
+            return DiscardAction(d)
+
         if RaiseAction in legal_actions:
             min_raise, max_raise = round_state.raise_bounds()
             min_cost = min_raise - my_pip  # the cost of a minimum bet/raise
