@@ -38,7 +38,7 @@ class Player(Bot):
         Returns:
         Nothing.
         """
-        self.mode.p = 0.65
+        self.mode_p = 0.65
         self.mode = "p"
         self._prev_street = None
         self.raises_this_street = 0
@@ -55,7 +55,7 @@ class Player(Bot):
         Returns:
         Nothing.
         """
-        self.mode = "p" if random.random() < self.mode.p else "a"
+        self.mode = "p" if random.random() < self.mode_p else "a"
         self._prev_street = None
         self.raises_this_street = 0
 
@@ -193,9 +193,7 @@ class Player(Bot):
                 p = pairs[0]
                 return (6, t, p, 0, 0, 0)
 
-        # Flush
         if flush_suit is not None:
-            # take top 5 ranks from that suit mask
             mask = suit_masks[flush_suit]
             flush_ranks = []
             for r in range(12, -1, -1):
@@ -212,30 +210,25 @@ class Player(Bot):
                 flush_ranks[4],
             )
 
-        # Straight
         st_high = straight_high(rank_mask)
         if st_high is not None:
             return (4, st_high, 0, 0, 0, 0)
 
-        # Three of a kind
         if trips:
             t = trips[0]
             kickers = self._kickers_desc_excluding(rank_counts, {t}, 2)
             return (3, t, kickers[0], kickers[1], 0, 0)
 
-        # Two pair
         if len(pairs) >= 2:
             p1, p2 = pairs[0], pairs[1]
             kicker = self._kickers_desc_excluding(rank_counts, {p1, p2}, 1)[0]
             return (2, p1, p2, kicker, 0, 0)
 
-        # One pair
         if len(pairs) == 1:
             p = pairs[0]
             kickers = self._kickers_desc_excluding(rank_counts, {p}, 3)
             return (1, p, kickers[0], kickers[1], kickers[2], 0)
 
-        # High card
         ranks = self._ranks_desc_from_counts(rank_counts)
         return (0, ranks[0], ranks[1], ranks[2], ranks[3], ranks[4])
 
@@ -258,6 +251,20 @@ class Player(Bot):
             return 0.5
         return 0.0
 
+    def to_ids(self, card_strs):
+        """
+        Convert a list of card strings into card ids.
+
+        Arguments:
+        - card_strs: list[str] of cards like ['Ah','Td','2c']
+
+        Returns:
+        - list[int] card ids in [0,51]
+        """
+        from bitmask_tables import CARD_ID_BY_STR
+
+        return [CARD_ID_BY_STR[c] for c in card_strs]
+
     def get_action(self, game_state, round_state, active):
         """
         Where the magic happens - your code should implement this function.
@@ -271,36 +278,23 @@ class Player(Bot):
         Returns:
         Your action.
         """
-        legal_actions = (
-            round_state.legal_actions()
-        )  # the actions you are allowed to take
-        # 0, 3, 4, or 5 representing pre-flop, flop, turn, or river respectively
+        legal_actions = round_state.legal_actions()
         street = round_state.street
-        my_cards = round_state.hands[active]  # your cards
-        board_cards = round_state.board  # the board cards
-        # the number of chips you have contributed to the pot this round of betting
+        my_cards = round_state.hands[active]
+        board_cards = round_state.board
         my_pip = round_state.pips[active]
-        # the number of chips your opponent has contributed to the pot this round of betting
         opp_pip = round_state.pips[1 - active]
-        # the number of chips you have remaining
         my_stack = round_state.stacks[active]
-        # the number of chips your opponent has remaining
         opp_stack = round_state.stacks[1 - active]
-        continue_cost = (
-            opp_pip - my_pip
-        )  # the number of chips needed to stay in the pot
-        # the number of chips you have contributed to the pot
+        continue_cost = opp_pip - my_pip
         my_contribution = STARTING_STACK - my_stack
-        # the number of chips your opponent has contributed to the pot
         opp_contribution = STARTING_STACK - opp_stack
+        my_ids = self.to_ids(my_cards)
+        board_ids = self.to_ids(board_cards)
 
-        # Only use DiscardAction if it's in legal_actions (which already checks street)
-        # legal_actions() returns DiscardAction only when street is 2 or 3
         if DiscardAction in legal_actions:
-            # Always discards the first card in the bot's hand
             return DiscardAction(0)
         if RaiseAction in legal_actions:
-            # the smallest and largest numbers of chips for a legal bet/raise
             min_raise, max_raise = round_state.raise_bounds()
             min_cost = min_raise - my_pip  # the cost of a minimum bet/raise
             max_cost = max_raise - my_pip  # the cost of a maximum bet/raise
