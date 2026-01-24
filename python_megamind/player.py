@@ -39,8 +39,8 @@ class Player(Bot):
         Returns:
         Nothing.
         """
-        self.MC_ITERS = 200  # switch
-        self.mode_p = 0.65  # switch
+        self.MC_ITERS = 200
+        self.mode_p = 0.65
         self.mode = "p"
         self._prev_street = None
         self.raises_this_street = 0
@@ -367,7 +367,7 @@ class Player(Bot):
         Returns:
         int iterations
         """
-        return 40 if self.mode == "p" else 60
+        return 35 if self.mode == "p" else 50
 
     def _iters_for_postdiscard(self, board_len):
         """
@@ -380,10 +380,10 @@ class Player(Bot):
         int iterations
         """
         if board_len >= 6:
-            return 120
+            return 110
         if board_len == 5:
-            return 90
-        return 70
+            return 85
+        return 65
 
     def _mc_once_discard(self, my3_ids, board_ids, discard_idx, i_am_first_discarder):
         """
@@ -398,9 +398,6 @@ class Player(Bot):
         Returns:
         float 1.0 win, 0.5 tie, 0.0 loss
         """
-        known = set(my3_ids) | set(board_ids)
-        deck = self._remaining_deck(known)
-
         my_discard = my3_ids[discard_idx]
         my_hole2 = [my3_ids[i] for i in range(3) if i != discard_idx]
         board = list(board_ids) + [my_discard]
@@ -415,7 +412,6 @@ class Player(Bot):
             opp_hole2 = self._draw_n(
                 self._remaining_deck(set(board) | set(my_hole2)), 2
             )
-
             if len(board) == 3:
                 extra = self._draw_n(
                     self._remaining_deck(set(board) | set(my_hole2) | set(opp_hole2)), 1
@@ -431,7 +427,6 @@ class Player(Bot):
 
         my8 = my_hole2 + board
         opp8 = opp_hole2 + board
-
         return self.compare_hands_8(my8, opp8)
 
     def _cache_get(self, key):
@@ -500,26 +495,26 @@ class Player(Bot):
         gap = hi - lo
 
         if ra == rb:
-            if hi >= 10:  # TT+
+            if hi >= 10:
                 return 1
-            if hi >= 6:  # 66-99
+            if hi >= 6:
                 return 2
-            return 3  # 22-55
+            return 3
 
         broadway = (ra >= 10) and (rb >= 10)
 
-        if (hi, lo) in [(14, 13), (14, 12), (13, 12)]:  # AK/AQ/KQ
+        if (hi, lo) in [(14, 13), (14, 12), (13, 12)]:
             return 1
-        if suited and broadway and lo >= 11:  # KQs/QJs/JTs/AKs-type
+        if suited and broadway and lo >= 11:
             return 1
-        if suited and gap == 1 and lo >= 11:  # JTs+ suited connectors
+        if suited and gap == 1 and lo >= 11:
             return 1
 
-        if hi == 14 and suited:  # Axs
+        if hi == 14 and suited:
             return 2
-        if broadway:  # AT/KJ/QJ/JT etc
+        if broadway:
             return 2
-        if suited and gap == 1 and lo >= 6:  # 76s+
+        if suited and gap == 1 and lo >= 6:
             return 2
 
         if suited:
@@ -581,19 +576,9 @@ class Player(Bot):
 
         return score / float(iters)
 
-    def _choose_raise_size(self, round_state, my_pip, win_p, mode):
-        """
-        Pick a raise size given win probability and mode.
-
-        Arguments:
-        round_state: RoundState
-        my_pip: int
-        win_p: float
-        mode: str 'p' or 'a'
-
-        Returns:
-        int raise_to amount (the pip value after raising)
-        """
+    def _choose_raise_size(
+        self, round_state, my_pip, win_p, mode, pot_now, continue_cost, my_stack
+    ):
         min_raise, max_raise = round_state.raise_bounds()
 
         if mode == "a":
@@ -602,7 +587,16 @@ class Player(Bot):
             frac = max(0.0, min(1.0, (win_p - 0.55) / 0.35))
 
         target = int(min_raise + frac * (max_raise - min_raise))
-        return max(min_raise, min(max_raise, target))
+
+        cap_cost = int(0.75 * pot_now) + max(0, continue_cost)
+        cap_cost = max(2, cap_cost)
+        cap_cost = min(cap_cost, my_stack)
+        cap_raise_to = my_pip + cap_cost
+
+        raise_to = max(min_raise, min(max_raise, target))
+        raise_to = min(raise_to, cap_raise_to)
+        raise_to = max(min_raise, raise_to)
+        return raise_to
 
     def get_action(self, game_state, round_state, active):
         """
@@ -641,7 +635,6 @@ class Player(Bot):
 
         if DiscardAction in legal_actions:
             i_am_first = len(board_ids) == 2
-
             iters = self._iters_for_discard()
             cache_key = (
                 "discard",
@@ -665,6 +658,10 @@ class Player(Bot):
         if street == 0:
             tier, _best_pair = self.preflop_tier(my_ids)
 
+            cheap_defend = continue_cost > 0 and continue_cost <= max(
+                2, int(0.25 * pot_now)
+            )
+
             if continue_cost == 0:
                 if RaiseAction in legal_actions:
                     if tier == 1:
@@ -683,82 +680,110 @@ class Player(Bot):
                     return CheckAction()
                 return CallAction() if CallAction in legal_actions else FoldAction()
 
-            else:
-                if tier == 4 and FoldAction in legal_actions:
+            if tier == 4:
+                if cheap_defend and CallAction in legal_actions and continue_cost <= 1:
+                    return CallAction()
+                return FoldAction() if FoldAction in legal_actions else CallAction()
+
+            if tier == 3:
+                if cheap_defend and CallAction in legal_actions:
+                    return CallAction()
+                if (
+                    self.mode == "p"
+                    and random.random() < 0.35
+                    and FoldAction in legal_actions
+                ):
                     return FoldAction()
-
-                if tier == 3:
-                    if (
-                        self.mode == "p"
-                        and random.random() < 0.35
-                        and FoldAction in legal_actions
-                    ):
-                        return FoldAction()
-                    return CallAction() if CallAction in legal_actions else FoldAction()
-
-                if tier == 2:
-                    if RaiseAction in legal_actions:
-                        p_reraise = 0.35 if self.mode == "a" else 0.10
-                        if random.random() < p_reraise:
-                            min_raise, _ = round_state.raise_bounds()
-                            self.raises_this_street += 1
-                            return RaiseAction(min_raise)
-                    return CallAction() if CallAction in legal_actions else FoldAction()
-
-                if RaiseAction in legal_actions:
-                    min_raise, _ = round_state.raise_bounds()
-                    self.raises_this_street += 1
-                    return RaiseAction(min_raise)
                 return CallAction() if CallAction in legal_actions else FoldAction()
 
+            if tier == 2:
+                if RaiseAction in legal_actions:
+                    p_reraise = 0.35 if self.mode == "a" else 0.10
+                    if random.random() < p_reraise:
+                        min_raise, _ = round_state.raise_bounds()
+                        self.raises_this_street += 1
+                        return RaiseAction(min_raise)
+                return CallAction() if CallAction in legal_actions else FoldAction()
+
+            if RaiseAction in legal_actions:
+                min_raise, _ = round_state.raise_bounds()
+                self.raises_this_street += 1
+                return RaiseAction(min_raise)
+            return CallAction() if CallAction in legal_actions else FoldAction()
+
         if len(my_ids) == 2 and len(board_ids) >= 4:
-            win_p = self._calc_win_prob_postdiscard(
-                my_ids, board_ids, iters=self.MC_ITERS
-            )
-            call_ev = win_p * (pot_now + max(0, continue_cost)) - (1.0 - win_p) * max(
-                0, continue_cost
+            iters = self._iters_for_postdiscard(len(board_ids))
+            cache_key = ("winp", tuple(sorted(my_ids)), tuple(sorted(board_ids)), iters)
+            cached = self._cache_get(cache_key)
+            if cached is None:
+                win_p = self._calc_win_prob_postdiscard(my_ids, board_ids, iters=iters)
+                self._cache_set(cache_key, win_p)
+            else:
+                win_p = cached
+
+            if continue_cost > 0:
+                required = continue_cost / float(pot_now + continue_cost)
+            else:
+                required = 0.0
+
+            safety = 0.01 if self.mode == "a" else 0.03
+            tiny_call = continue_cost > 0 and (
+                continue_cost <= max(2, int(0.15 * pot_now))
+                or continue_cost <= max(2, int(0.03 * my_stack))
             )
 
             if continue_cost == 0:
-                if RaiseAction in legal_actions:
+                if RaiseAction in legal_actions and self.raises_this_street < 2:
                     bet_thresh = 0.55 if self.mode == "p" else 0.50
                     bluff_freq = 0.03 if self.mode == "p" else 0.10
 
                     should_value_bet = win_p >= bet_thresh
                     should_bluff = (win_p <= 0.40) and (random.random() < bluff_freq)
 
-                    if (
-                        should_value_bet or should_bluff
-                    ) and self.raises_this_street < 2:
+                    if should_value_bet or should_bluff:
                         raise_to = self._choose_raise_size(
-                            round_state, my_pip, win_p, self.mode
+                            round_state,
+                            my_pip,
+                            win_p,
+                            self.mode,
+                            pot_now,
+                            continue_cost,
+                            my_stack,
                         )
                         self.raises_this_street += 1
                         return RaiseAction(raise_to)
 
                 return CheckAction() if CheckAction in legal_actions else CallAction()
 
-            else:
-                fold_thresh = 0.48 if self.mode == "a" else 0.52
-                if win_p < fold_thresh and FoldAction in legal_actions:
-                    return FoldAction()
+            if win_p < 0.10 and FoldAction in legal_actions:
+                return FoldAction()
 
-                if call_ev < 0 and FoldAction in legal_actions:
-                    return FoldAction()
+            if (
+                (win_p < required + safety)
+                and (not tiny_call)
+                and FoldAction in legal_actions
+            ):
+                return FoldAction()
 
-                raise_thresh = 0.62 if self.mode == "p" else 0.58
-                if (
-                    RaiseAction in legal_actions
-                    and win_p >= raise_thresh
-                    and self.raises_this_street < 2
-                ):
-                    raise_to = self._choose_raise_size(
-                        round_state, my_pip, win_p, self.mode
-                    )
-                    self.raises_this_street += 1
-                    return RaiseAction(raise_to)
+            raise_thresh = 0.64 if self.mode == "p" else 0.58
+            if (
+                RaiseAction in legal_actions
+                and win_p >= raise_thresh
+                and self.raises_this_street < 2
+            ):
+                raise_to = self._choose_raise_size(
+                    round_state,
+                    my_pip,
+                    win_p,
+                    self.mode,
+                    pot_now,
+                    continue_cost,
+                    my_stack,
+                )
+                self.raises_this_street += 1
+                return RaiseAction(raise_to)
 
-                return CallAction() if CallAction in legal_actions else FoldAction()
+            return CallAction() if CallAction in legal_actions else FoldAction()
 
         if CheckAction in legal_actions:
             return CheckAction()
