@@ -456,17 +456,20 @@ struct Bot {
       if (legalActions.find(Action::Type::CALL) != legalActions.end()) {
         return {Action::Type::CALL};
       }
+      if (legalActions.find(Action::Type::CHECK) != legalActions.end()) {
+        return {Action::Type::CHECK};
+      }
 
       // fallback raise
-      auto raiseBounds = roundState->raiseBounds();
-      int minRaise = raiseBounds[0];
-      int maxRaise = raiseBounds[1];
-      int raiseVal = (int)std::min(
-        (double)maxRaise,
-        3.0 * winProbability * (myContribution + oppContribution)
-      );
+      // auto raiseBounds = roundState->raiseBounds();
+      // int minRaise = raiseBounds[0];
+      // int maxRaise = raiseBounds[1];
+      // int raiseVal = (int)std::min(
+      //   (double)maxRaise,
+      //   3.0 * winProbability * (myContribution + oppContribution)
+      // );
       
-      return {Action::Type::RAISE, std::max(minRaise, raiseVal)};
+      // return {Action::Type::RAISE, std::max(minRaise, raiseVal)};
     }
 
     // Fallback
