@@ -600,32 +600,36 @@ class Player(Bot):
 
     def get_action(self, game_state, round_state, active):
         """
-        Where the magic happens - your code should implement this function.
-        Called any time the engine needs an action from your bot.
+        Decide and return an action for the current game state.
 
         Arguments:
-        game_state: the GameState object.
-        round_state: the RoundState object.
-        active: your player's index.
+        - game_state: GameState
+        - round_state: RoundState
+        - active: int player index (0 or 1)
 
         Returns:
-        Your action.
+        - Action instance
         """
         legal_actions = round_state.legal_actions()
         street = round_state.street
+
         my_cards = round_state.hands[active]
         board_cards = round_state.board
 
         my_pip = round_state.pips[active]
         opp_pip = round_state.pips[1 - active]
+
         my_stack = round_state.stacks[active]
         opp_stack = round_state.stacks[1 - active]
 
-        continue_cost = opp_pip - my_pip
+        # IMPORTANT: never let this go negative
+        continue_cost = max(0, opp_pip - my_pip)
+
         my_contribution = STARTING_STACK - my_stack
         opp_contribution = STARTING_STACK - opp_stack
-        pot_now = my_contribution + opp_contribution
+        pot = my_contribution + opp_contribution
 
+        # reset per-street raise counter
         if self._prev_street != street:
             self._prev_street = street
             self.raises_this_street = 0
@@ -633,163 +637,65 @@ class Player(Bot):
         my_ids = self._to_ids(my_cards)
         board_ids = self._to_ids(board_cards)
 
+        # -------- DISCARD PHASE --------
         if DiscardAction in legal_actions:
             i_am_first = len(board_ids) == 2
-            iters = self._iters_for_discard()
-            cache_key = (
-                "discard",
-                tuple(sorted(my_ids)),
-                tuple(sorted(board_ids)),
-                i_am_first,
-                iters,
+            d = self.choose_discard_mc(
+                my_ids,
+                board_ids,
+                i_am_first_discarder=i_am_first,
+                iters=self.MC_ITERS,
             )
-
-            cached = self._cache_get(cache_key)
-            if cached is None:
-                d = self.choose_discard_mc(
-                    my_ids, board_ids, i_am_first_discarder=i_am_first, iters=iters
-                )
-                self._cache_set(cache_key, d)
-            else:
-                d = cached
-
             return DiscardAction(d)
 
-        if street == 0:
-            tier, _best_pair = self.preflop_tier(my_ids)
-
-            cheap_defend = continue_cost > 0 and continue_cost <= max(
-                2, int(0.25 * pot_now)
-            )
-
-            if continue_cost == 0:
-                if RaiseAction in legal_actions:
-                    if tier == 1:
-                        min_raise, _ = round_state.raise_bounds()
-                        self.raises_this_street += 1
-                        return RaiseAction(min_raise)
-
-                    if tier == 2:
-                        p_raise = 0.60 if self.mode == "a" else 0.25
-                        if random.random() < p_raise:
-                            min_raise, _ = round_state.raise_bounds()
-                            self.raises_this_street += 1
-                            return RaiseAction(min_raise)
-
-                if CheckAction in legal_actions:
-                    return CheckAction()
-                return CallAction() if CallAction in legal_actions else FoldAction()
-
-            if tier == 4:
-                if cheap_defend and CallAction in legal_actions and continue_cost <= 1:
-                    return CallAction()
-                return FoldAction() if FoldAction in legal_actions else CallAction()
-
-            if tier == 3:
-                if cheap_defend and CallAction in legal_actions:
-                    return CallAction()
-                if (
-                    self.mode == "p"
-                    and random.random() < 0.35
-                    and FoldAction in legal_actions
-                ):
-                    return FoldAction()
-                return CallAction() if CallAction in legal_actions else FoldAction()
-
-            if tier == 2:
-                if RaiseAction in legal_actions:
-                    p_reraise = 0.35 if self.mode == "a" else 0.10
-                    if random.random() < p_reraise:
-                        min_raise, _ = round_state.raise_bounds()
-                        self.raises_this_street += 1
-                        return RaiseAction(min_raise)
-                return CallAction() if CallAction in legal_actions else FoldAction()
-
-            if RaiseAction in legal_actions:
+        # -------- NO-FREE-FOLD RULE --------
+        # If it costs nothing to continue, never fold.
+        if continue_cost == 0 and CheckAction in legal_actions:
+            # Optional tiny probe in aggressive mode (rare)
+            if (
+                self.mode == "a"
+                and RaiseAction in legal_actions
+                and self.raises_this_street == 0
+                and random.random() < 0.08
+            ):
                 min_raise, _ = round_state.raise_bounds()
                 self.raises_this_street += 1
                 return RaiseAction(min_raise)
-            return CallAction() if CallAction in legal_actions else FoldAction()
-
-        if len(my_ids) == 2 and len(board_ids) >= 4:
-            iters = self._iters_for_postdiscard(len(board_ids))
-            cache_key = ("winp", tuple(sorted(my_ids)), tuple(sorted(board_ids)), iters)
-            cached = self._cache_get(cache_key)
-            if cached is None:
-                win_p = self._calc_win_prob_postdiscard(my_ids, board_ids, iters=iters)
-                self._cache_set(cache_key, win_p)
-            else:
-                win_p = cached
-
-            if continue_cost > 0:
-                required = continue_cost / float(pot_now + continue_cost)
-            else:
-                required = 0.0
-
-            safety = 0.01 if self.mode == "a" else 0.03
-            tiny_call = continue_cost > 0 and (
-                continue_cost <= max(2, int(0.15 * pot_now))
-                or continue_cost <= max(2, int(0.03 * my_stack))
-            )
-
-            if continue_cost == 0:
-                if RaiseAction in legal_actions and self.raises_this_street < 2:
-                    bet_thresh = 0.55 if self.mode == "p" else 0.50
-                    bluff_freq = 0.03 if self.mode == "p" else 0.10
-
-                    should_value_bet = win_p >= bet_thresh
-                    should_bluff = (win_p <= 0.40) and (random.random() < bluff_freq)
-
-                    if should_value_bet or should_bluff:
-                        raise_to = self._choose_raise_size(
-                            round_state,
-                            my_pip,
-                            win_p,
-                            self.mode,
-                            pot_now,
-                            continue_cost,
-                            my_stack,
-                        )
-                        self.raises_this_street += 1
-                        return RaiseAction(raise_to)
-
-                return CheckAction() if CheckAction in legal_actions else CallAction()
-
-            if win_p < 0.10 and FoldAction in legal_actions:
-                return FoldAction()
-
-            if (
-                (win_p < required + safety)
-                and (not tiny_call)
-                and FoldAction in legal_actions
-            ):
-                return FoldAction()
-
-            raise_thresh = 0.64 if self.mode == "p" else 0.58
-            if (
-                RaiseAction in legal_actions
-                and win_p >= raise_thresh
-                and self.raises_this_street < 2
-            ):
-                raise_to = self._choose_raise_size(
-                    round_state,
-                    my_pip,
-                    win_p,
-                    self.mode,
-                    pot_now,
-                    continue_cost,
-                    my_stack,
-                )
-                self.raises_this_street += 1
-                return RaiseAction(raise_to)
-
-            return CallAction() if CallAction in legal_actions else FoldAction()
-
-        if CheckAction in legal_actions:
             return CheckAction()
+
+        # -------- WHEN FACING A BET --------
+        # Big-bet guardrail: fold big pressure more in passive mode.
+        # This prevents calling off stacks randomly.
+        big_bet = (continue_cost > 0.5 * pot) or (continue_cost > 0.25 * my_stack)
+        if big_bet and FoldAction in legal_actions:
+            if self.mode == "p":
+                return FoldAction()
+            # aggressive mode: still fold often, but not always
+            if random.random() < 0.70:
+                return FoldAction()
+
+        # Avoid raise wars: cap our raises per street unless we later add strength logic
+        if (
+            RaiseAction in legal_actions
+            and self.raises_this_street == 0
+            and not big_bet
+            and self.mode == "a"
+            and random.random() < 0.18
+        ):
+            min_raise, _ = round_state.raise_bounds()
+            self.raises_this_street += 1
+            return RaiseAction(min_raise)
+
+        # Default: call if we can
         if CallAction in legal_actions:
             return CallAction()
-        return FoldAction()
+
+        # Fallbacks
+        if CheckAction in legal_actions:
+            return CheckAction()
+        if FoldAction in legal_actions:
+            return FoldAction()
+        return CheckAction()
 
 
 if __name__ == "__main__":
