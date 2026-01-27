@@ -132,6 +132,48 @@ class HandEvaluator:
         else:
             return 0.5  # tie
 
+    def two_card_strength(self, cards, board):
+        """
+        Cheap heuristic for opponent strength.
+        Higher = stronger.
+        """
+        score = 0
+
+        # rank values
+        ranks = [RANK_TO_INDEX[c[0]] for c in cards]
+        suits = [c[1] for c in cards]
+
+        # High cards
+        score += max(ranks) * 2
+        score += sum(ranks) * 0.3
+
+        # Pair
+        if ranks[0] == ranks[1]:
+            score += 20
+
+        # Suited
+        if suits[0] == suits[1]:
+            score += 5
+
+        # Board interaction
+        board_ranks = {c[0] for c in board}
+        score += sum(5 for c in cards if c[0] in board_ranks)
+
+        return score
+
+    def choose_opponent_discard_simple(self, opp_cards, board):
+        best_score = -1
+        best_discard = 0
+
+        for i in range(3):
+            kept = [c for j, c in enumerate(opp_cards) if j != i]
+            score = self.two_card_strength(kept, board)
+            if score > best_score:
+                best_score = score
+                best_discard = i
+
+        return best_discard
+
 
 def get_all_preflop_hands():
     """Generate all possible 3-card preflop hands."""
@@ -148,16 +190,20 @@ def simulate_game(my_cards, opp_cards, board):
     ]
     random.shuffle(remaining_deck)
 
-    board = remaining_deck[:5] + board
-
-    my_final = my_cards + board
-    opp_final = opp_cards + board
-
     evaluator = HandEvaluator()
+    opp_discard_idx = evaluator.choose_opponent_discard_simple(opp_cards, board)
+    opp_kept = [c for i, c in enumerate(opp_cards) if i != opp_discard_idx]
+
+    full_board = remaining_deck[:4] + board + [opp_cards[opp_discard_idx]]
+
+    my_final = my_cards + full_board
+    opp_final = opp_kept + full_board
+
+    # print(my_final, opp_final)
     return evaluator.compare_hands(my_final, opp_final)
 
 
-def compute_preflop_equity_mc(hand, board, num_simulations=10000):
+def compute_preflop_equity_mc(hand, board, num_simulations):
     """Compute preflop equity using Monte Carlo simulation."""
     deck = [r + s for r in HandEvaluator.RANKS for s in HandEvaluator.SUITS]
     remaining_deck = [c for c in deck if c not in hand and c not in board]
@@ -167,7 +213,7 @@ def compute_preflop_equity_mc(hand, board, num_simulations=10000):
 
     for _ in range(num_simulations):
         random.shuffle(remaining_deck)
-        opp_cards = remaining_deck[:2]
+        opp_cards = remaining_deck[:3]
         result = simulate_game(hand, opp_cards, board)
         wins += result
         total += 1
@@ -181,22 +227,16 @@ def main():
     equities = {}
 
     start_time = time.time()
-    # for hand in tqdm(hands):
-    for hand in hands:
+    for hand in tqdm(hands):
+        # for hand in hands:
         # Sort hand for consistent key
         hand_key = tuple(sorted(hand))
-        p1 = compute_preflop_equity_mc(
-            [hand[0], hand[1]], [hand[2]], num_simulations=10000
-        )
-        p2 = compute_preflop_equity_mc(
-            [hand[0], hand[2]], [hand[1]], num_simulations=10000
-        )
-        p3 = compute_preflop_equity_mc(
-            [hand[1], hand[2]], [hand[0]], num_simulations=10000
-        )
+        p1 = compute_preflop_equity_mc([hand[0], hand[1]], [hand[2]], 1000)
+        p2 = compute_preflop_equity_mc([hand[0], hand[2]], [hand[1]], 1000)
+        p3 = compute_preflop_equity_mc([hand[1], hand[2]], [hand[0]], 1000)
         equities[hand_key] = max(p1, p2, p3)
 
-        print(f"Hand: {hand_key}, Equity: {equities[hand_key]:.4f}")
+        # print(f"Hand: {hand_key}, Equity: {equities[hand_key]:.4f}")
 
     end_time = time.time()
     print(f"Precomputation completed in {end_time - start_time:.2f} seconds.")

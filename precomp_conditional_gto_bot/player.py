@@ -15,6 +15,7 @@ from skeleton.bot import Bot
 from skeleton.runner import parse_args, run_bot
 
 import random
+import pickle
 from bitmask_tables import STRAIGHT_MASK_SET, STRAIGHT_MASKS, RANK_TO_INDEX
 from itertools import combinations
 
@@ -47,7 +48,8 @@ class Player(Bot):
         Returns:
         Nothing.
         """
-        pass
+        with open("preflop_equities_mc.pkl", "rb") as f:
+            self.preflop_equities = pickle.load(f)
 
     def handle_new_round(self, game_state, round_state, active):
         """
@@ -259,7 +261,7 @@ class Player(Bot):
         increase = self.compare_hands(my_hand, opp_hand)
         # print(increase)
         return increase
-    
+
     def two_card_strength(self, cards, board):
         """
         Cheap heuristic for opponent strength.
@@ -288,7 +290,8 @@ class Player(Bot):
         score += sum(5 for c in cards if c[0] in board_ranks)
 
         return score
-    def choose_opponent_discard_simple(self,opp_cards, board):
+
+    def choose_opponent_discard_simple(self, opp_cards, board):
         best_score = -1
         best_discard = 0
 
@@ -300,7 +303,6 @@ class Player(Bot):
                 best_discard = i
 
         return best_discard
-
 
     def sim_mc_once(self, my_cards, board_cards, discard_idx):
         new_board = board_cards.copy()
@@ -318,16 +320,13 @@ class Player(Bot):
         opp_cards = deck[:3]
         deck = deck[3:]
         opp_discard_idx = self.choose_opponent_discard_simple(opp_cards, new_board)
-        opp_kept_cards = [
-            c for i, c in enumerate(opp_cards) if i != opp_discard_idx
-        ]
+        opp_kept_cards = [c for i, c in enumerate(opp_cards) if i != opp_discard_idx]
 
         needed = 6 - len(new_board)
         future_board = deck[2 : 2 + needed]
 
         my_hand = kept_cards + new_board + future_board
         opp_hand = opp_kept_cards + new_board + future_board
-
 
         # return self.hand_strength(my_hand) > self.hand_strength(opp_hand)
 
@@ -463,6 +462,10 @@ class Player(Bot):
         Returns:
             float: Probability of winning (0.0 to 1.0)
         """
+        if street == 0:
+            hand_key = tuple(sorted(my_cards))
+            return self.preflop_equities.get(hand_key)
+
         wins = 0
         total = 0
 
