@@ -18,6 +18,7 @@ import random
 from bitmask_tables import STRAIGHT_MASK_SET, STRAIGHT_MASKS, RANK_TO_INDEX
 from itertools import combinations
 
+
 def _popcount(x: int) -> int:
     """
     Compatibility popcount for older Python versions where int.bit_count() may not exist.
@@ -179,10 +180,10 @@ class Player(Bot):
         if RaiseAction in legal_actions:
             # play conservatively by calling
             if CallAction in legal_actions:
-                return CallAction() 
+                return CallAction()
             # if CheckAction in legal_actions: # extra conservative
             #     return CheckAction()
-            
+
             # fallback raise
             min_raise, max_raise = round_state.raise_bounds()
             raise_val = int(
@@ -193,7 +194,7 @@ class Player(Bot):
                 )
             )
 
-            return RaiseAction(max(min_raise, raise_val)) # fallback raise
+            return RaiseAction(max(min_raise, raise_val))  # fallback raise
             # return RaiseAction(max(min_raise, continue_cost))
 
         # fallback
@@ -444,7 +445,7 @@ if __name__ == "__main__":
     # print("=" * 80)
     # for my_cards, board_cards, street, desc in test_cases:
     #     bot.REMAINING_DECK = [
-    #         r + s for r in bot.RANKS for s in bot.SUITS 
+    #         r + s for r in bot.RANKS for s in bot.SUITS
     #         if r + s not in my_cards
     #     ]
     #     for card in board_cards:

@@ -163,7 +163,14 @@ class Player(Bot):
             return DiscardAction(discard_idx)
 
         # print("starting probability calculation...")
-        win_probability = self._calc_winning_prob(my_cards, board_cards, street)
+        win_probability = self._calc_winning_prob(my_cards, board_cards, street) - 0.07
+        if street == 0:
+            if CheckAction in legal_actions:
+                return CheckAction()
+            elif win_probability > opp_pip / 400:
+                if CallAction in legal_actions:
+                    return CallAction()
+            return FoldAction
         # print("finished probability calculation")
         ev = (
             win_probability * (my_contribution + opp_contribution)
@@ -195,8 +202,8 @@ class Player(Bot):
                 )
             )
 
-            return RaiseAction(max(min_raise, raise_val))  # fallback raise
-            # return RaiseAction(max(min_raise, continue_cost))
+            # return RaiseAction(max(min_raise, raise_val))  # fallback raise
+            return RaiseAction(max(min_raise, continue_cost))
 
         # fallback
         if CheckAction in legal_actions:
@@ -418,17 +425,11 @@ class Player(Bot):
 
             increase = self.mc_once(my_cards, board_cards, discard_idx=-1)
 
-            if increase[1] - increase[2] <= 6 - street:
-                print("increase:", increase)
+            # if increase[1] - increase[2] <= 6 - street:
+            if increase[1] != 0 or street <= 3:
+                # print("increase:", increase)
                 wins += increase[0]
                 total += 1
-
-            # # Compare hand strengths
-            # if self.hand_strength(my_hand) > self.hand_strength(opp_hand):
-            #     wins += 1
-            # elif self.hand_strength(my_hand) == self.hand_strength(opp_hand):
-            #     # Count ties as half wins
-            #     wins += 0.5
 
         total = self.MC_ITERATIONS if street <= 3 else total
         # print(f"Wins: {wins}, Total: {total}")
@@ -442,21 +443,24 @@ if __name__ == "__main__":
     #     # (["Ah", "Kh", "Qh"], ["Jh", "Th"], 2, "Flop with straight flush draw"),
     #     # (["As", "Ks"], ["Ac", "Kc", "Qc", "Jc"], 4, "Turn with two pair"),
     #     # (["2h", "3h", "4h"], ["5h", "6h"], 2, "Flop with low straight"),
-    #     (["Qs", "Jc"], ["4c", "7c", "4s", "Jh", "2c", "6h"], 6, "game replay"),
+    #     # (["Qs", "Jc"], ["4c", "7c", "4s", "Jh", "2c", "6h"], 6, "game replay"),
+    #     (["4s", "9d", "Qd"], [], 0, "game replay"),
     # ]
     # print("Python Win Probability Test Results:")
     # print("=" * 80)
     # for my_cards, board_cards, street, desc in test_cases:
     #     bot.REMAINING_DECK = [
-    #         r + s for r in bot.RANKS for s in bot.SUITS
-    #         if r + s not in my_cards
+    #         r + s for r in bot.RANKS for s in bot.SUITS if r + s not in my_cards
     #     ]
     #     for card in board_cards:
     #         if card in bot.REMAINING_DECK:
     #             bot.REMAINING_DECK.remove(card)
-    #     win_prob = bot._calc_winning_prob(my_cards, board_cards, street)
+    #     win_prob = bot._calc_winning_prob(my_cards, board_cards, street) - 0.07
     #     print(f"{desc}")
     #     print(f"  Cards: {my_cards}, Board: {board_cards}, Street: {street}")
     #     print(f"  Win probability: {win_prob:.6f}\n")
+
+    #     ev = win_prob * (0 + 400) - (1 - win_prob) * 400
+    #     print(f"  EV: {ev:.2f}")
     # print("=" * 80)
     run_bot(Player(), parse_args())
