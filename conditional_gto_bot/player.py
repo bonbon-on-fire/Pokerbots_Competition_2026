@@ -259,6 +259,81 @@ class Player(Bot):
         increase = self.compare_hands(my_hand, opp_hand)
         # print(increase)
         return increase
+    
+    def two_card_strength(self, cards, board):
+        """
+        Cheap heuristic for opponent strength.
+        Higher = stronger.
+        """
+        score = 0
+
+        # rank values
+        ranks = [RANK_TO_INDEX[c[0]] for c in cards]
+        suits = [c[1] for c in cards]
+
+        # High cards
+        score += max(ranks) * 2
+        score += sum(ranks) * 0.3
+
+        # Pair
+        if ranks[0] == ranks[1]:
+            score += 20
+
+        # Suited
+        if suits[0] == suits[1]:
+            score += 5
+
+        # Board interaction
+        board_ranks = {c[0] for c in board}
+        score += sum(5 for c in cards if c[0] in board_ranks)
+
+        return score
+    def choose_opponent_discard_simple(self,opp_cards, board):
+        best_score = -1
+        best_discard = 0
+
+        for i in range(3):
+            kept = [c for j, c in enumerate(opp_cards) if j != i]
+            score = self.two_card_strength(kept, board)
+            if score > best_score:
+                best_score = score
+                best_discard = i
+
+        return best_discard
+
+
+    def sim_mc_once(self, my_cards, board_cards, discard_idx):
+        new_board = board_cards.copy()
+        kept_cards = my_cards.copy()
+        if discard_idx != -1:
+            discarded = my_cards[discard_idx]
+            kept_cards = [c for i, c in enumerate(my_cards) if i != discard_idx]
+
+            new_board = board_cards + [discarded]
+
+        # deck = self.remaining_deck(my_cards, board_cards)
+        deck = self.REMAINING_DECK.copy()
+        random.shuffle(deck)
+
+        opp_cards = deck[:3]
+        deck = deck[3:]
+        opp_discard_idx = self.choose_opponent_discard_simple(opp_cards, new_board)
+        opp_kept_cards = [
+            c for i, c in enumerate(opp_cards) if i != opp_discard_idx
+        ]
+
+        needed = 6 - len(new_board)
+        future_board = deck[2 : 2 + needed]
+
+        my_hand = kept_cards + new_board + future_board
+        opp_hand = opp_kept_cards + new_board + future_board
+
+
+        # return self.hand_strength(my_hand) > self.hand_strength(opp_hand)
+
+        increase = self.compare_hands(my_hand, opp_hand)
+        # print(increase)
+        return increase
 
     def choose_discard_mc(self, my_cards, board_cards):
         wins = [0, 0, 0]
@@ -415,7 +490,7 @@ class Player(Bot):
             #         f"My hand: {' '.join(my_hand)} vs Opponent hand: {' '.join(opp_hand)} => Increase: {increase}"
             #     )
 
-            increase = self.mc_once(my_cards, board_cards, discard_idx=-1)
+            increase = self.sim_mc_once(my_cards, board_cards, discard_idx=-1)
 
             wins += increase[0] if (increase[1] != 0 or street <= 3) else 0
             total += 1 if (increase[1] != 0 or street <= 3) else 0
