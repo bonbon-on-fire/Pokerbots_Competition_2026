@@ -247,7 +247,7 @@ def save_probs(probs, filename="preflop_probs.pkl"):
     Save the precomputed probabilities to a file.
     """
     with open(filename, "wb") as f:
-        pickle.dump(probs, f)
+        pickle.dump(probs, f, protocol=4)
     print(f"Saved probabilities to {filename}")
 
 
@@ -259,11 +259,20 @@ def load_probs(filename="preflop_probs.pkl"):
         return pickle.load(f)
 
 
+def convert_pickle_protocol(filename, new_protocol=4):
+    """
+    Load a pickle file and resave it with a different protocol.
+    """
+    with open(filename, "rb") as f:
+        data = pickle.load(f)
+    with open(filename, "wb") as f:
+        pickle.dump(data, f, protocol=new_protocol)
+    print(f"Converted {filename} to pickle protocol {new_protocol}")
+
+
 if __name__ == "__main__":
-    # print(DECK)
-    # Precompute and save pre-flop probabilities
-    # compute_probs(DECK[0:7], 7)
-    # compute_probs(["2d", "2h", "2c", "2s", "3c", "3d", "3h", "Qs"], 44)
-    # compute_probs(["2d", "2h", "2c", "2s", "3c", "3d", "3h"], 8)
-    compute_probs([], 0)
-    save_probs(PROBS)
+    # Convert existing pickle file to protocol 4
+    convert_pickle_protocol("preflop_equities_mc.pkl", 4)
+
+    # compute_probs([], 0)
+    # save_probs(PROBS)
