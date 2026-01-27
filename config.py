@@ -5,7 +5,7 @@ PLAYER_1_NAME = "A"
 PLAYER_1_PATH = "./precomp_conditional_gto_bot"
 # NO TRAILING SLASHES ARE ALLOWED IN PATHS
 PLAYER_2_NAME = "B"
-PLAYER_2_PATH = "./pcgto_codex_bot"
+PLAYER_2_PATH = "./pcgto_codex_bot (1)"
 # GAME PROGRESS IS RECORDED HERE
 GAME_LOG_FILENAME = "gamelog"
 # PLAYER_LOG_SIZE_LIMIT IS IN BYTES
