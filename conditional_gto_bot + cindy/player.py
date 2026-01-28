@@ -163,14 +163,7 @@ class Player(Bot):
             return DiscardAction(discard_idx)
 
         # print("starting probability calculation...")
-        win_probability = self._calc_winning_prob(my_cards, board_cards, street) - 0.07
-        if street == 0:
-            if CheckAction in legal_actions:
-                return CheckAction()
-            elif win_probability > opp_pip / 400:
-                if CallAction in legal_actions:
-                    return CallAction()
-            return FoldAction
+        win_probability = self._calc_winning_prob(my_cards, board_cards, street)
         # print("finished probability calculation")
         ev = (
             win_probability * (my_contribution + opp_contribution)
@@ -198,12 +191,11 @@ class Player(Bot):
                     max_raise,
                     # 0.75 * (win_probability * (my_contribution + opp_contribution)) / (1 - win_probability),
                     3 * win_probability * (my_contribution + opp_contribution),
-                    # my_contribution + opp_contribution
                 )
             )
 
-            # return RaiseAction(max(min_raise, raise_val))  # fallback raise
-            return RaiseAction(max(min_raise, continue_cost))
+            return RaiseAction(max(min_raise, raise_val))  # fallback raise
+            # return RaiseAction(max(min_raise, continue_cost))
 
         # fallback
         if CheckAction in legal_actions:
@@ -261,6 +253,78 @@ class Player(Bot):
 
         my_hand = kept_cards + new_board + future_board
         opp_hand = opp_cards + new_board + future_board
+
+        # return self.hand_strength(my_hand) > self.hand_strength(opp_hand)
+
+        increase = self.compare_hands(my_hand, opp_hand)
+        # print(increase)
+        return increase
+
+    def two_card_strength(self, cards, board):
+        """
+        Cheap heuristic for opponent strength.
+        Higher = stronger.
+        """
+        score = 0
+
+        # rank values
+        ranks = [RANK_TO_INDEX[c[0]] for c in cards]
+        suits = [c[1] for c in cards]
+
+        # High cards
+        score += max(ranks) * 2
+        score += sum(ranks) * 0.3
+
+        # Pair
+        if ranks[0] == ranks[1]:
+            score += 20
+
+        # Suited
+        if suits[0] == suits[1]:
+            score += 5
+
+        # Board interaction
+        board_ranks = {c[0] for c in board}
+        score += sum(5 for c in cards if c[0] in board_ranks)
+
+        return score
+
+    def choose_opponent_discard_simple(self, opp_cards, board):
+        best_score = -1
+        best_discard = 0
+
+        for i in range(3):
+            kept = [c for j, c in enumerate(opp_cards) if j != i]
+            score = self.two_card_strength(kept, board)
+            if score > best_score:
+                best_score = score
+                best_discard = i
+
+        return best_discard
+
+    def sim_mc_once(self, my_cards, board_cards, discard_idx):
+        new_board = board_cards.copy()
+        kept_cards = my_cards.copy()
+        if discard_idx != -1:
+            discarded = my_cards[discard_idx]
+            kept_cards = [c for i, c in enumerate(my_cards) if i != discard_idx]
+
+            new_board = board_cards + [discarded]
+
+        # deck = self.remaining_deck(my_cards, board_cards)
+        deck = self.REMAINING_DECK.copy()
+        random.shuffle(deck)
+
+        opp_cards = deck[:3]
+        deck = deck[3:]
+        opp_discard_idx = self.choose_opponent_discard_simple(opp_cards, new_board)
+        opp_kept_cards = [c for i, c in enumerate(opp_cards) if i != opp_discard_idx]
+
+        needed = 6 - len(new_board)
+        future_board = deck[2 : 2 + needed]
+
+        my_hand = kept_cards + new_board + future_board
+        opp_hand = opp_kept_cards + new_board + future_board
 
         # return self.hand_strength(my_hand) > self.hand_strength(opp_hand)
 
@@ -381,7 +445,7 @@ class Player(Bot):
         p2_rank = self.best_hand_rank_8(p2_cards)
 
         value = 1 if p1_rank[0] > p2_rank[0] else 0.5 if p1_rank[0] == p2_rank[0] else 0
-        return [value, p1_rank[1], p2_rank[1]]
+        return [value, p2_rank[1]]
 
     def _calc_winning_prob(self, my_cards, board_cards, street=0):
         """
@@ -396,6 +460,7 @@ class Player(Bot):
         Returns:
             float: Probability of winning (0.0 to 1.0)
         """
+
         wins = 0
         total = 0
 
@@ -423,13 +488,17 @@ class Player(Bot):
             #         f"My hand: {' '.join(my_hand)} vs Opponent hand: {' '.join(opp_hand)} => Increase: {increase}"
             #     )
 
-            increase = self.mc_once(my_cards, board_cards, discard_idx=-1)
+            increase = self.sim_mc_once(my_cards, board_cards, discard_idx=-1)
 
-            # if increase[1] - increase[2] <= 6 - street:
-            if increase[1] != 0 or street <= 3:
-                # print("increase:", increase)
-                wins += increase[0]
-                total += 1
+            wins += increase[0] if (increase[1] != 0 or street <= 3) else 0
+            total += 1 if (increase[1] != 0 or street <= 3) else 0
+
+            # # Compare hand strengths
+            # if self.hand_strength(my_hand) > self.hand_strength(opp_hand):
+            #     wins += 1
+            # elif self.hand_strength(my_hand) == self.hand_strength(opp_hand):
+            #     # Count ties as half wins
+            #     wins += 0.5
 
         total = self.MC_ITERATIONS if street <= 3 else total
         # print(f"Wins: {wins}, Total: {total}")
@@ -439,28 +508,25 @@ class Player(Bot):
 if __name__ == "__main__":
     # bot = Player()
     # test_cases = [
-    #     # (["Ah", "Kh", "Qh"], [], 0, "Pre-flop with premium hand"),
-    #     # (["Ah", "Kh", "Qh"], ["Jh", "Th"], 2, "Flop with straight flush draw"),
-    #     # (["As", "Ks"], ["Ac", "Kc", "Qc", "Jc"], 4, "Turn with two pair"),
-    #     # (["2h", "3h", "4h"], ["5h", "6h"], 2, "Flop with low straight"),
-    #     # (["Qs", "Jc"], ["4c", "7c", "4s", "Jh", "2c", "6h"], 6, "game replay"),
-    #     (["4s", "9d", "Qd"], [], 0, "game replay"),
+    #     (["Ah", "Kh", "Qh"], [], 0, "Pre-flop with premium hand"),
+    #     (["Ah", "Kh", "Qh"], ["Jh", "Th"], 2, "Flop with straight flush draw"),
+    #     (["As", "Ks", "Qs"], ["Ac", "Kc", "Qc", "Jc"], 5, "Turn with two pair"),
+    #     (["2h", "3h", "4h"], ["5h", "6h"], 2, "Flop with low straight"),
+    #     (["Ah", "Ad", "As"], [], 0, "Pre-flop with three aces"),
     # ]
     # print("Python Win Probability Test Results:")
     # print("=" * 80)
     # for my_cards, board_cards, street, desc in test_cases:
     #     bot.REMAINING_DECK = [
-    #         r + s for r in bot.RANKS for s in bot.SUITS if r + s not in my_cards
+    #         r + s for r in bot.RANKS for s in bot.SUITS
+    #         if r + s not in my_cards
     #     ]
     #     for card in board_cards:
     #         if card in bot.REMAINING_DECK:
     #             bot.REMAINING_DECK.remove(card)
-    #     win_prob = bot._calc_winning_prob(my_cards, board_cards, street) - 0.07
+    #     win_prob = bot._calc_winning_prob(my_cards, board_cards, street)
     #     print(f"{desc}")
     #     print(f"  Cards: {my_cards}, Board: {board_cards}, Street: {street}")
     #     print(f"  Win probability: {win_prob:.6f}\n")
-
-    #     ev = win_prob * (0 + 400) - (1 - win_prob) * 400
-    #     print(f"  EV: {ev:.2f}")
     # print("=" * 80)
     run_bot(Player(), parse_args())

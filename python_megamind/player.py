@@ -13,6 +13,7 @@ from skeleton.states import GameState, TerminalState, RoundState
 from skeleton.states import NUM_ROUNDS, STARTING_STACK, BIG_BLIND, SMALL_BLIND
 from skeleton.bot import Bot
 from skeleton.runner import parse_args, run_bot
+
 from bitmask_tables import (
     CARD_ID_BY_STR,
     CARD_RANK_IDX,
@@ -39,13 +40,21 @@ class Player(Bot):
         Returns:
         Nothing.
         """
-        self.MC_ITERS = 200  # switch
-        self.mode_p = 0.65  # switch
+        self.mode_p = 0.65
         self.mode = "p"
+
         self._prev_street = None
         self.raises_this_street = 0
+
         self._mc_cache = {}
-        self._debug = False
+
+        # Runtime knobs (keep conservative so we don't time out)
+        self.DISCARD_ITERS_P = 25
+        self.DISCARD_ITERS_A = 35
+
+        self.POST_ITERS_FLOP = 55  # board_len=4
+        self.POST_ITERS_TURN = 75  # board_len=5
+        self.POST_ITERS_RIVER = 95  # board_len=6
 
     def handle_new_round(self, game_state, round_state, active):
         """
@@ -75,7 +84,7 @@ class Player(Bot):
         Returns:
         Nothing.
         """
-        pass
+        return
 
     def _popcount(self, x):
         """
@@ -297,10 +306,10 @@ class Player(Bot):
         Convert a list of card strings into card ids.
 
         Arguments:
-        - card_strs: list[str] of cards like ['Ah','Td','2c'].
+        - card_strs: list[str] like ['Ah','Td','2c']
 
         Returns:
-        - list[int] card ids in [0, 51].
+        - list[int] card ids in [0, 51]
         """
         return [CARD_ID_BY_STR[c] for c in card_strs]
 
@@ -309,10 +318,10 @@ class Player(Bot):
         Build a list of available card ids excluding known cards.
 
         Arguments:
-        - known_ids: set[int] of card ids already seen/used.
+        - known_ids: set[int]
 
         Returns:
-        - list[int] of remaining card ids.
+        - list[int]
         """
         return [cid for cid in range(52) if cid not in known_ids]
 
@@ -321,27 +330,25 @@ class Player(Bot):
         Draw n distinct cards uniformly at random from a deck list.
 
         Arguments:
-        - deck: list[int] card ids remaining.
-        - n: int number of cards to draw.
+        - deck: list[int]
+        - n: int
 
         Returns:
-        - list[int] of length n (distinct).
+        - list[int] of length n
         """
         return random.sample(deck, n)
 
-    def _opp_choose_discard_simple(self, opp3_ids, board_ids):
+    def _opp_choose_discard_simple(self, opp3_ids):
         """
         Choose which of opponent's 3 hole cards they discard (simple heuristic).
 
         Arguments:
         opp3_ids: list[int] length 3
-        board_ids: list[int] current board ids (after our discard may be shown)
 
         Returns:
-        int index in [0,2] to discard
+        int index in [0,2]
         """
         ranks = [CARD_RANK_IDX[c] for c in opp3_ids]
-
         best_keep = None
         for i in range(3):
             keep = [j for j in range(3) if j != i]
@@ -352,211 +359,80 @@ class Player(Bot):
             cand = (score, tuple(keep))
             if best_keep is None or cand > best_keep:
                 best_keep = cand
-
         keep_indices = best_keep[1]
         discard_idx = [i for i in range(3) if i not in keep_indices][0]
         return discard_idx
-
-    def _iters_for_discard(self):
-        """
-        Choose MC iterations for discard phase.
-
-        Arguments:
-        Nothing.
-
-        Returns:
-        int iterations
-        """
-        return 40 if self.mode == "p" else 60
-
-    def _iters_for_postdiscard(self, board_len):
-        """
-        Choose MC iterations for post-discard betting based on board length.
-
-        Arguments:
-        board_len: int length of board_ids (4, 5, or 6)
-
-        Returns:
-        int iterations
-        """
-        if board_len >= 6:
-            return 120
-        if board_len == 5:
-            return 90
-        return 70
 
     def _mc_once_discard(self, my3_ids, board_ids, discard_idx, i_am_first_discarder):
         """
         Run one Monte Carlo rollout for a chosen discard.
 
         Arguments:
-        my3_ids: list[int] length 3 (our pre-discard hole)
-        board_ids: list[int] current board (len 2 if we discard first; len 3 if opp already discarded)
-        discard_idx: int in [0,2] which of our 3 to discard to board
+        my3_ids: list[int] length 3
+        board_ids: list[int] len 2 or 3
+        discard_idx: int in [0,2]
         i_am_first_discarder: bool
 
         Returns:
         float 1.0 win, 0.5 tie, 0.0 loss
         """
-        known = set(my3_ids) | set(board_ids)
-        deck = self._remaining_deck(known)
-
         my_discard = my3_ids[discard_idx]
         my_hole2 = [my3_ids[i] for i in range(3) if i != discard_idx]
         board = list(board_ids) + [my_discard]
 
         if i_am_first_discarder:
-            opp3 = self._draw_n(self._remaining_deck(set(board) | set(my_hole2)), 3)
-            opp_disc_idx = self._opp_choose_discard_simple(opp3, board)
+            known = set(board) | set(my_hole2)
+            opp3 = self._draw_n(self._remaining_deck(known), 3)
+            opp_disc_idx = self._opp_choose_discard_simple(opp3)
             opp_discard = opp3[opp_disc_idx]
             opp_hole2 = [opp3[i] for i in range(3) if i != opp_disc_idx]
             board.append(opp_discard)
         else:
-            opp_hole2 = self._draw_n(
-                self._remaining_deck(set(board) | set(my_hole2)), 2
-            )
+            known = set(board) | set(my_hole2)
+            opp_hole2 = self._draw_n(self._remaining_deck(known), 2)
 
             if len(board) == 3:
-                extra = self._draw_n(
-                    self._remaining_deck(set(board) | set(my_hole2) | set(opp_hole2)), 1
-                )[0]
-                board.append(extra)
+                known2 = set(board) | set(my_hole2) | set(opp_hole2)
+                board.append(self._draw_n(self._remaining_deck(known2), 1)[0])
 
         need = 6 - len(board)
         if need > 0:
-            fill = self._draw_n(
-                self._remaining_deck(set(board) | set(my_hole2) | set(opp_hole2)), need
-            )
-            board.extend(fill)
+            known3 = set(board) | set(my_hole2) | set(opp_hole2)
+            board.extend(self._draw_n(self._remaining_deck(known3), need))
 
         my8 = my_hole2 + board
         opp8 = opp_hole2 + board
-
         return self.compare_hands_8(my8, opp8)
 
-    def _cache_get(self, key):
-        return self._mc_cache.get(key, None)
-
-    def _cache_set(self, key, val):
-        if len(self._mc_cache) > 5000:
-            self._mc_cache.clear()
-        self._mc_cache[key] = val
-
-    def choose_discard_mc(self, my3_ids, board_ids, i_am_first_discarder, iters=None):
+    def choose_discard_mc(self, my3_ids, board_ids, i_am_first_discarder, iters):
         """
         Choose discard index by Monte Carlo win/tie score.
 
         Arguments:
         my3_ids: list[int] length 3
-        board_ids: list[int] current board (len 2 or 3)
+        board_ids: list[int] length 2 or 3
         i_am_first_discarder: bool
-        iters: int MC iterations per discard option (optional)
+        iters: int rollouts per discard option
 
         Returns:
         int discard index 0/1/2
         """
-        if iters is None:
-            iters = self.MC_ITERS if hasattr(self, "MC_ITERS") else 200
-
         scores = [0.0, 0.0, 0.0]
         for d in range(3):
             s = 0.0
             for _ in range(iters):
                 s += self._mc_once_discard(my3_ids, board_ids, d, i_am_first_discarder)
             scores[d] = s
-
         return max(range(3), key=lambda i: scores[i])
-
-    def _rank_from_idx(self, r_idx):
-        """
-        Convert rank index [0..12] back to rank value [2..14].
-
-        Arguments:
-        r_idx: int
-
-        Returns:
-        int rank value (2..14)
-        """
-        return r_idx + 2
-
-    def _preflop_core_tier_ids(self, cida, cidb):
-        """
-        Tier a 2-card core using card ids (preflop heuristic).
-
-        Arguments:
-        cida: int card id [0..51]
-        cidb: int card id [0..51]
-
-        Returns:
-        int tier in {1,2,3,4} where 1 is strongest
-        """
-        ra = self._rank_from_idx(CARD_RANK_IDX[cida])
-        rb = self._rank_from_idx(CARD_RANK_IDX[cidb])
-        sa = CARD_SUIT_IDX[cida]
-        sb = CARD_SUIT_IDX[cidb]
-
-        hi, lo = (ra, rb) if ra >= rb else (rb, ra)
-        suited = sa == sb
-        gap = hi - lo
-
-        if ra == rb:
-            if hi >= 10:  # TT+
-                return 1
-            if hi >= 6:  # 66-99
-                return 2
-            return 3  # 22-55
-
-        broadway = (ra >= 10) and (rb >= 10)
-
-        if (hi, lo) in [(14, 13), (14, 12), (13, 12)]:  # AK/AQ/KQ
-            return 1
-        if suited and broadway and lo >= 11:  # KQs/QJs/JTs/AKs-type
-            return 1
-        if suited and gap == 1 and lo >= 11:  # JTs+ suited connectors
-            return 1
-
-        if hi == 14 and suited:  # Axs
-            return 2
-        if broadway:  # AT/KJ/QJ/JT etc
-            return 2
-        if suited and gap == 1 and lo >= 6:  # 76s+
-            return 2
-
-        if suited:
-            return 3
-        if hi >= 10 and lo >= 7:
-            return 3
-
-        return 4
-
-    def preflop_tier(self, my3_ids):
-        """
-        Evaluate all (3 choose 2) 2-card cores from 3-card hand and return best tier.
-
-        Arguments:
-        my3_ids: list[int] length 3
-
-        Returns:
-        (best_tier, best_pair_idx)
-        best_tier: int 1..4 (1 best)
-        best_pair_idx: tuple[int,int] indices of kept core inside the 3 cards
-        """
-        cores = [
-            ((0, 1), self._preflop_core_tier_ids(my3_ids[0], my3_ids[1])),
-            ((0, 2), self._preflop_core_tier_ids(my3_ids[0], my3_ids[2])),
-            ((1, 2), self._preflop_core_tier_ids(my3_ids[1], my3_ids[2])),
-        ]
-        best_pair_idx, best_tier = min(cores, key=lambda x: x[1])
-        return best_tier, best_pair_idx
 
     def _calc_win_prob_postdiscard(self, my2_ids, board_ids, iters):
         """
-        Monte Carlo estimate of win probability AFTER discards (we have 2 hole cards).
+        Monte Carlo estimate of win probability after discards.
 
         Arguments:
         my2_ids: list[int] length 2
         board_ids: list[int] length 4,5,6
-        iters: int number of rollouts
+        iters: int rollouts
 
         Returns:
         float win probability in [0,1] where tie counts as 0.5
@@ -564,207 +440,280 @@ class Player(Bot):
         known = set(my2_ids) | set(board_ids)
         deck = [cid for cid in range(52) if cid not in known]
 
-        need_board = 6 - len(board_ids)
-        if need_board < 0:
-            need_board = 0
-
+        need_board = max(0, 6 - len(board_ids))
         score = 0.0
         for _ in range(iters):
             draw = random.sample(deck, 2 + need_board)
             opp2 = draw[:2]
             future = draw[2:]
-
             full_board = list(board_ids) + future
+
             my8 = list(my2_ids) + full_board
             opp8 = list(opp2) + full_board
             score += self.compare_hands_8(my8, opp8)
 
         return score / float(iters)
 
-    def _choose_raise_size(self, round_state, my_pip, win_p, mode):
+    def _pot_odds(self, pot, cost):
         """
-        Pick a raise size given win probability and mode.
+        Compute pot odds (minimum win prob needed to call).
 
         Arguments:
-        round_state: RoundState
-        my_pip: int
-        win_p: float
-        mode: str 'p' or 'a'
+        - pot: int current pot before calling
+        - cost: int amount to call
 
         Returns:
-        int raise_to amount (the pip value after raising)
+        - float pot odds in [0,1]
+        """
+        if cost <= 0:
+            return 0.0
+        return cost / float(pot + cost)
+
+    def _safety_margin(self, street):
+        """
+        Safety margin added on top of pot-odds.
+
+        Arguments:
+        - street: int
+
+        Returns:
+        - float margin
+        """
+        # Streets: 0 pre, 3/4/5 post
+        if street == 0:
+            base = 0.02
+        elif street <= 3:
+            base = 0.03
+        else:
+            base = 0.04
+
+        if self.mode == "p":
+            base += 0.01
+        else:
+            base -= 0.005
+
+        return max(0.0, base)
+
+    def _is_big_pressure(self, cost, pot, my_stack):
+        """
+        Detect big bet/raise pressure.
+
+        Arguments:
+        - cost: int continue_cost
+        - pot: int current pot
+        - my_stack: int
+
+        Returns:
+        - bool
+        """
+        return (cost > 0.50 * pot) or (cost > 0.25 * my_stack)
+
+    def _choose_raise_to(self, round_state, my_pip, continue_cost, pot, win_p):
+        """
+        Choose a raise_to (pip total) using pot-fraction sizing, clamped to bounds.
+
+        Arguments:
+        - round_state: RoundState
+        - my_pip: int
+        - continue_cost: int
+        - pot: int current pot before calling
+        - win_p: float
+
+        Returns:
+        - int raise_to (total pip after raise)
         """
         min_raise, max_raise = round_state.raise_bounds()
 
-        if mode == "a":
-            frac = max(0.0, min(1.0, (win_p - 0.50) / 0.35))
+        # Strength band
+        if win_p >= 0.80:
+            frac = 0.90
+        elif win_p >= 0.68:
+            frac = 0.60
         else:
-            frac = max(0.0, min(1.0, (win_p - 0.55) / 0.35))
+            frac = 0.33
 
-        target = int(min_raise + frac * (max_raise - min_raise))
-        return max(min_raise, min(max_raise, target))
+        # Slightly bigger in aggressive mode
+        if self.mode == "a":
+            frac = min(0.95, frac + 0.10)
+
+        # We raise over the current price: call + add a pot-fraction
+        target_add = int(frac * (pot + continue_cost))
+        target_to = my_pip + continue_cost + max(1, target_add)
+
+        if target_to < min_raise:
+            target_to = min_raise
+        if target_to > max_raise:
+            target_to = max_raise
+        return target_to
 
     def get_action(self, game_state, round_state, active):
         """
-        Where the magic happens - your code should implement this function.
-        Called any time the engine needs an action from your bot.
+        Decide and return an action for the current game state.
 
         Arguments:
-        game_state: the GameState object.
-        round_state: the RoundState object.
-        active: your player's index.
+        - game_state: GameState
+        - round_state: RoundState
+        - active: int player index (0 or 1)
 
         Returns:
-        Your action.
+        - Action instance
         """
         legal_actions = round_state.legal_actions()
-        street = round_state.street
-        my_cards = round_state.hands[active]
-        board_cards = round_state.board
 
-        my_pip = round_state.pips[active]
-        opp_pip = round_state.pips[1 - active]
-        my_stack = round_state.stacks[active]
-        opp_stack = round_state.stacks[1 - active]
+        try:
+            street = round_state.street
+            my_cards = round_state.hands[active]
+            board_cards = round_state.board
 
-        continue_cost = opp_pip - my_pip
-        my_contribution = STARTING_STACK - my_stack
-        opp_contribution = STARTING_STACK - opp_stack
-        pot_now = my_contribution + opp_contribution
+            my_pip = round_state.pips[active]
+            opp_pip = round_state.pips[1 - active]
+            my_stack = round_state.stacks[active]
 
-        if self._prev_street != street:
-            self._prev_street = street
-            self.raises_this_street = 0
+            continue_cost = opp_pip - my_pip
+            my_contribution = STARTING_STACK - my_stack
+            opp_contribution = STARTING_STACK - round_state.stacks[1 - active]
+            pot_now = my_contribution + opp_contribution
 
-        my_ids = self._to_ids(my_cards)
-        board_ids = self._to_ids(board_cards)
+            if self._prev_street != street:
+                self._prev_street = street
+                self.raises_this_street = 0
 
-        if DiscardAction in legal_actions:
-            i_am_first = len(board_ids) == 2
+            my_ids = self._to_ids(my_cards)
+            board_ids = self._to_ids(board_cards)
 
-            iters = self._iters_for_discard()
-            cache_key = (
-                "discard",
-                tuple(sorted(my_ids)),
-                tuple(sorted(board_ids)),
-                i_am_first,
-                iters,
-            )
-
-            cached = self._cache_get(cache_key)
-            if cached is None:
-                d = self.choose_discard_mc(
-                    my_ids, board_ids, i_am_first_discarder=i_am_first, iters=iters
+            # -------- DISCARD PHASE --------
+            if DiscardAction in legal_actions:
+                i_am_first = len(board_ids) == 2
+                iters = (
+                    self.DISCARD_ITERS_P if self.mode == "p" else self.DISCARD_ITERS_A
                 )
-                self._cache_set(cache_key, d)
-            else:
-                d = cached
+                key = (
+                    "discard",
+                    tuple(sorted(my_ids)),
+                    tuple(sorted(board_ids)),
+                    i_am_first,
+                    iters,
+                    self.mode,
+                )
+                cached = self._mc_cache.get(key, None)
+                if cached is None:
+                    d = self.choose_discard_mc(
+                        my_ids, board_ids, i_am_first_discarder=i_am_first, iters=iters
+                    )
+                    if len(self._mc_cache) > 6000:
+                        self._mc_cache.clear()
+                    self._mc_cache[key] = d
+                else:
+                    d = cached
+                return DiscardAction(d)
 
-            return DiscardAction(d)
-
-        if street == 0:
-            tier, _best_pair = self.preflop_tier(my_ids)
-
-            if continue_cost == 0:
-                if RaiseAction in legal_actions:
-                    if tier == 1:
+            # -------- ALWAYS: NO FREE FOLD --------
+            if continue_cost <= 0:
+                if CheckAction in legal_actions:
+                    # rare tiny probe (mainly in aggressive mode)
+                    if (
+                        RaiseAction in legal_actions
+                        and self.mode == "a"
+                        and self.raises_this_street == 0
+                        and random.random() < 0.07
+                        and street != 0
+                    ):
                         min_raise, _ = round_state.raise_bounds()
                         self.raises_this_street += 1
                         return RaiseAction(min_raise)
-
-                    if tier == 2:
-                        p_raise = 0.60 if self.mode == "a" else 0.25
-                        if random.random() < p_raise:
-                            min_raise, _ = round_state.raise_bounds()
-                            self.raises_this_street += 1
-                            return RaiseAction(min_raise)
-
-                if CheckAction in legal_actions:
                     return CheckAction()
-                return CallAction() if CallAction in legal_actions else FoldAction()
+                return CallAction() if CallAction in legal_actions else CheckAction()
 
-            else:
-                if tier == 4 and FoldAction in legal_actions:
+            # -------- POST-DISCARD: USE MC + POT ODDS --------
+            if len(my_ids) == 2 and len(board_ids) >= 4:
+                if len(board_ids) >= 6:
+                    iters = self.POST_ITERS_RIVER
+                elif len(board_ids) == 5:
+                    iters = self.POST_ITERS_TURN
+                else:
+                    iters = self.POST_ITERS_FLOP
+
+                # High-stakes: spend a bit more compute where it matters
+                if self._is_big_pressure(continue_cost, pot_now, my_stack):
+                    iters = int(iters * 1.6)
+
+                key = ("post", tuple(sorted(my_ids)), tuple(sorted(board_ids)), iters)
+                win_p = self._mc_cache.get(key, None)
+                if win_p is None:
+                    win_p = self._calc_win_prob_postdiscard(
+                        my_ids, board_ids, iters=iters
+                    )
+                    if len(self._mc_cache) > 6000:
+                        self._mc_cache.clear()
+                    self._mc_cache[key] = win_p
+
+                pot_odds = self._pot_odds(pot_now, continue_cost)
+                need = pot_odds + self._safety_margin(street)
+
+                # Big pressure: require extra confidence
+                if self._is_big_pressure(continue_cost, pot_now, my_stack):
+                    need += 0.04 if self.mode == "p" else 0.03
+
+                # Fold if not meeting pot-odds threshold
+                if win_p < need and FoldAction in legal_actions:
                     return FoldAction()
 
-                if tier == 3:
-                    if (
-                        self.mode == "p"
-                        and random.random() < 0.35
-                        and FoldAction in legal_actions
-                    ):
-                        return FoldAction()
-                    return CallAction() if CallAction in legal_actions else FoldAction()
-
-                if tier == 2:
-                    if RaiseAction in legal_actions:
-                        p_reraise = 0.35 if self.mode == "a" else 0.10
-                        if random.random() < p_reraise:
-                            min_raise, _ = round_state.raise_bounds()
-                            self.raises_this_street += 1
-                            return RaiseAction(min_raise)
-                    return CallAction() if CallAction in legal_actions else FoldAction()
-
-                if RaiseAction in legal_actions:
-                    min_raise, _ = round_state.raise_bounds()
-                    self.raises_this_street += 1
-                    return RaiseAction(min_raise)
-                return CallAction() if CallAction in legal_actions else FoldAction()
-
-        if len(my_ids) == 2 and len(board_ids) >= 4:
-            win_p = self._calc_win_prob_postdiscard(
-                my_ids, board_ids, iters=self.MC_ITERS
-            )
-            call_ev = win_p * (pot_now + max(0, continue_cost)) - (1.0 - win_p) * max(
-                0, continue_cost
-            )
-
-            if continue_cost == 0:
-                if RaiseAction in legal_actions:
-                    bet_thresh = 0.55 if self.mode == "p" else 0.50
-                    bluff_freq = 0.03 if self.mode == "p" else 0.10
-
-                    should_value_bet = win_p >= bet_thresh
-                    should_bluff = (win_p <= 0.40) and (random.random() < bluff_freq)
-
-                    if (
-                        should_value_bet or should_bluff
-                    ) and self.raises_this_street < 2:
-                        raise_to = self._choose_raise_size(
-                            round_state, my_pip, win_p, self.mode
-                        )
-                        self.raises_this_street += 1
-                        return RaiseAction(raise_to)
-
-                return CheckAction() if CheckAction in legal_actions else CallAction()
-
-            else:
-                fold_thresh = 0.48 if self.mode == "a" else 0.52
-                if win_p < fold_thresh and FoldAction in legal_actions:
-                    return FoldAction()
-
-                if call_ev < 0 and FoldAction in legal_actions:
-                    return FoldAction()
-
-                raise_thresh = 0.62 if self.mode == "p" else 0.58
-                if (
+                # Raise ladder: avoid raise wars unless very strong
+                can_raise = (
                     RaiseAction in legal_actions
-                    and win_p >= raise_thresh
-                    and self.raises_this_street < 2
-                ):
-                    raise_to = self._choose_raise_size(
-                        round_state, my_pip, win_p, self.mode
+                    and (self.raises_this_street < 2 or win_p >= 0.78)
+                    and not self._is_big_pressure(continue_cost, pot_now, my_stack)
+                )
+
+                if can_raise and win_p >= (0.66 if self.mode == "a" else 0.70):
+                    raise_to = self._choose_raise_to(
+                        round_state, my_pip, continue_cost, pot_now, win_p
                     )
                     self.raises_this_street += 1
                     return RaiseAction(raise_to)
 
+                return CallAction() if CallAction in legal_actions else CheckAction()
+
+            # -------- PREFLOP: SIMPLE TIGHT DISCIPLINE --------
+            # If we don't have a post-discard MC estimate yet, do not spew.
+            if street == 0:
+                # very tight vs big bets
+                if self._is_big_pressure(continue_cost, pot_now, my_stack):
+                    if FoldAction in legal_actions:
+                        return FoldAction()
+                    return CallAction()
+
+                # Otherwise just call a lot, raise rarely
+                if (
+                    RaiseAction in legal_actions
+                    and self.mode == "a"
+                    and self.raises_this_street == 0
+                ):
+                    if random.random() < 0.10:
+                        min_raise, _ = round_state.raise_bounds()
+                        self.raises_this_street += 1
+                        return RaiseAction(min_raise)
+
                 return CallAction() if CallAction in legal_actions else FoldAction()
 
-        if CheckAction in legal_actions:
+            # -------- DEFAULT FALLBACK --------
+            if CallAction in legal_actions:
+                return CallAction()
+            if CheckAction in legal_actions:
+                return CheckAction()
+            if FoldAction in legal_actions:
+                return FoldAction()
             return CheckAction()
-        if CallAction in legal_actions:
-            return CallAction()
-        return FoldAction()
+
+        except Exception:
+            # crash-proof fallback to avoid socket disconnects
+            if CheckAction in legal_actions:
+                return CheckAction()
+            if CallAction in legal_actions:
+                return CallAction()
+            if FoldAction in legal_actions:
+                return FoldAction()
+            return CheckAction()
 
 
 if __name__ == "__main__":

@@ -15,8 +15,10 @@ from skeleton.bot import Bot
 from skeleton.runner import parse_args, run_bot
 
 import random
+import pickle
 from bitmask_tables import STRAIGHT_MASK_SET, STRAIGHT_MASKS, RANK_TO_INDEX
 from itertools import combinations
+
 
 def _popcount(x: int) -> int:
     """
@@ -46,7 +48,8 @@ class Player(Bot):
         Returns:
         Nothing.
         """
-        pass
+        with open("preflop_equities_mc.pkl", "rb") as f:
+            self.preflop_equities = pickle.load(f)
 
     def handle_new_round(self, game_state, round_state, active):
         """
@@ -179,10 +182,10 @@ class Player(Bot):
         if RaiseAction in legal_actions:
             # play conservatively by calling
             if CallAction in legal_actions:
-                return CallAction() 
+                return CallAction()
             # if CheckAction in legal_actions: # extra conservative
             #     return CheckAction()
-            
+
             # fallback raise
             min_raise, max_raise = round_state.raise_bounds()
             raise_val = int(
@@ -193,7 +196,7 @@ class Player(Bot):
                 )
             )
 
-            return RaiseAction(max(min_raise, raise_val)) # fallback raise
+            return RaiseAction(max(min_raise, raise_val))  # fallback raise
             # return RaiseAction(max(min_raise, continue_cost))
 
         # fallback
@@ -252,6 +255,78 @@ class Player(Bot):
 
         my_hand = kept_cards + new_board + future_board
         opp_hand = opp_cards + new_board + future_board
+
+        # return self.hand_strength(my_hand) > self.hand_strength(opp_hand)
+
+        increase = self.compare_hands(my_hand, opp_hand)
+        # print(increase)
+        return increase
+
+    def two_card_strength(self, cards, board):
+        """
+        Cheap heuristic for opponent strength.
+        Higher = stronger.
+        """
+        score = 0
+
+        # rank values
+        ranks = [RANK_TO_INDEX[c[0]] for c in cards]
+        suits = [c[1] for c in cards]
+
+        # High cards
+        score += max(ranks) * 2
+        score += sum(ranks) * 0.3
+
+        # Pair
+        if ranks[0] == ranks[1]:
+            score += 20
+
+        # Suited
+        if suits[0] == suits[1]:
+            score += 5
+
+        # Board interaction
+        board_ranks = {c[0] for c in board}
+        score += sum(5 for c in cards if c[0] in board_ranks)
+
+        return score
+
+    def choose_opponent_discard_simple(self, opp_cards, board):
+        best_score = -1
+        best_discard = 0
+
+        for i in range(3):
+            kept = [c for j, c in enumerate(opp_cards) if j != i]
+            score = self.two_card_strength(kept, board)
+            if score > best_score:
+                best_score = score
+                best_discard = i
+
+        return best_discard
+
+    def sim_mc_once(self, my_cards, board_cards, discard_idx):
+        new_board = board_cards.copy()
+        kept_cards = my_cards.copy()
+        if discard_idx != -1:
+            discarded = my_cards[discard_idx]
+            kept_cards = [c for i, c in enumerate(my_cards) if i != discard_idx]
+
+            new_board = board_cards + [discarded]
+
+        # deck = self.remaining_deck(my_cards, board_cards)
+        deck = self.REMAINING_DECK.copy()
+        random.shuffle(deck)
+
+        opp_cards = deck[:3]
+        deck = deck[3:]
+        opp_discard_idx = self.choose_opponent_discard_simple(opp_cards, new_board)
+        opp_kept_cards = [c for i, c in enumerate(opp_cards) if i != opp_discard_idx]
+
+        needed = 6 - len(new_board)
+        future_board = deck[2 : 2 + needed]
+
+        my_hand = kept_cards + new_board + future_board
+        opp_hand = opp_kept_cards + new_board + future_board
 
         # return self.hand_strength(my_hand) > self.hand_strength(opp_hand)
 
@@ -387,6 +462,10 @@ class Player(Bot):
         Returns:
             float: Probability of winning (0.0 to 1.0)
         """
+        if street == 0:
+            hand_key = tuple(sorted(my_cards))
+            return self.preflop_equities.get(hand_key)
+
         wins = 0
         total = 0
 
@@ -414,7 +493,7 @@ class Player(Bot):
             #         f"My hand: {' '.join(my_hand)} vs Opponent hand: {' '.join(opp_hand)} => Increase: {increase}"
             #     )
 
-            increase = self.mc_once(my_cards, board_cards, discard_idx=-1)
+            increase = self.sim_mc_once(my_cards, board_cards, discard_idx=-1)
 
             wins += increase[0] if (increase[1] != 0 or street <= 3) else 0
             total += 1 if (increase[1] != 0 or street <= 3) else 0
@@ -444,7 +523,7 @@ if __name__ == "__main__":
     # print("=" * 80)
     # for my_cards, board_cards, street, desc in test_cases:
     #     bot.REMAINING_DECK = [
-    #         r + s for r in bot.RANKS for s in bot.SUITS 
+    #         r + s for r in bot.RANKS for s in bot.SUITS
     #         if r + s not in my_cards
     #     ]
     #     for card in board_cards:
