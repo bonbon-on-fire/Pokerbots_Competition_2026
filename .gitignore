@@ -3,6 +3,7 @@ A.txt
 B.txt
 gamelog.txt
 *.class
+*.zip
 .DS_Store
 .idea/
 .metadata/

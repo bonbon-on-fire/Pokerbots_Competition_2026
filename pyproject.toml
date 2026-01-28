@@ -9,4 +9,5 @@ dependencies = [
     "pkrbot>=1.1.0",
     "python-dotenv>=1.0.0",
     "openai==0.28.0",
+    "torch>=2.0.0",
 ]

@@ -1,0 +1,4 @@
+{
+    "build": [],
+    "run": [".venv\\Scripts\\python.exe", "player.py"]
+}
