@@ -35,7 +35,7 @@ class Player(Bot):
     A pokerbot.
     """
 
-    # FULL_DECK = []
+    FULL_DECK = tuple(r + s for r in "23456789TJQKA" for s in "hdcs")
     REMAINING_DECK = []
 
     def __init__(self):
@@ -151,32 +151,10 @@ class Player(Bot):
         # the number of chips your opponent has contributed to the pot
         opp_contribution = STARTING_STACK - opp_stack
 
-        # remove cards
-        if street == 0:
-            self.REMAINING_DECK = [
-                r + s for r in self.RANKS for s in self.SUITS if r + s not in my_cards
-            ]
-        if street == 2:
-            # Flop is revealed - remove board cards (2 cards)
-            for c in board_cards:
-                if c in self.REMAINING_DECK:
-                    self.REMAINING_DECK.remove(c)
-        if street == 3:
-            # After first discard - remove the newly discarded card
-            if len(board_cards) > 0 and board_cards[-1] in self.REMAINING_DECK:
-                self.REMAINING_DECK.remove(board_cards[-1])
-        if street == 4:
-            # After second discard - remove the newly discarded card
-            if len(board_cards) > 0 and board_cards[-1] in self.REMAINING_DECK:
-                self.REMAINING_DECK.remove(board_cards[-1])
-        if street == 5:
-            # Turn is revealed
-            if len(board_cards) > 0 and board_cards[-1] in self.REMAINING_DECK:
-                self.REMAINING_DECK.remove(board_cards[-1])
-        if street == 6:
-            # River is revealed
-            if len(board_cards) > 0 and board_cards[-1] in self.REMAINING_DECK:
-                self.REMAINING_DECK.remove(board_cards[-1])
+        # Rebuild remaining deck once per action to avoid repeated list removals.
+        excluded = set(my_cards)
+        excluded.update(board_cards)
+        self.REMAINING_DECK = [c for c in self.FULL_DECK if c not in excluded]
 
         # Only use DiscardAction if it's in legal_actions (which already checks street)
         # legal_actions() returns DiscardAction only when street is 2 or 3
@@ -206,6 +184,9 @@ class Player(Bot):
 
         # If facing a bet, use pot odds to decide whether to continue.
         if continue_cost > 0:
+            bet_fraction = continue_cost / max(1, pot_after_call)
+            big_bet = bet_fraction >= 0.50
+            late_street = street >= 5
             # Preflop blind defense: avoid over-folding to small opens.
             if street == 0 and continue_cost <= BIG_BLIND:
                 if win_probability >= max(0.40, pot_odds - 0.02):
@@ -220,17 +201,25 @@ class Player(Bot):
                         CallAction() if CallAction in legal_actions else CheckAction()
                     )
 
+            # Tighten up versus big bets on late streets to avoid raise wars.
+            if late_street and big_bet and win_probability < 0.88:
+                return FoldAction() if FoldAction in legal_actions else CheckAction()
+
             if win_probability < call_threshold:
                 return FoldAction() if FoldAction in legal_actions else CheckAction()
 
-            # With very strong hands, raise for value sometimes.
-            if RaiseAction in legal_actions and win_probability > 0.82:
+            # With very strong hands, raise for value more often.
+            if RaiseAction in legal_actions and win_probability > 0.80:
                 min_raise, max_raise = round_state.raise_bounds()
                 # Size up slightly versus opponents who fold too often.
                 pressure_boost = 1.0 + min(0.25, max(0.0, opp_fold_pressure - 0.15))
-                value_raise = int(pressure_boost * pot_after_call)
+                # Avoid huge raise chains without near-nuts.
+                if late_street and big_bet and win_probability < 0.92:
+                    value_raise = int(0.65 * pot_after_call)
+                else:
+                    value_raise = int(pressure_boost * 1.15 * pot_after_call)
                 raise_amount = max(min_raise, min(max_raise, value_raise))
-                if raise_amount > min_raise and random.random() < 0.6:
+                if raise_amount > min_raise and random.random() < 0.7:
                     self.aggressed_this_round = True
                     return RaiseAction(raise_amount)
 
@@ -264,15 +253,15 @@ class Player(Bot):
                     self.aggressed_this_round = True
                     return RaiseAction(raise_amount)
 
-            # Street-tuned thresholds. Later streets require higher equity to bet.
+            # Street-tuned thresholds. Slightly thinner value to extract more.
             if street == 0:
-                value_threshold = 0.60
+                value_threshold = 0.56
             elif street <= 4:
-                value_threshold = 0.64
+                value_threshold = 0.60
             elif street == 5:
-                value_threshold = 0.68
+                value_threshold = 0.63
             else:
-                value_threshold = 0.72
+                value_threshold = 0.68
 
             # Nudge thresholds down slightly when the opponent over-folds.
             if opp_fold_pressure > 0.18:
@@ -289,7 +278,12 @@ class Player(Bot):
 
             if wants_value_bet or wants_bluff:
                 # Choose a pot-scaled sizing but respect engine bounds.
-                size_mult = 0.70 if opp_fold_pressure > 0.18 else 0.65
+                if win_probability >= 0.80:
+                    size_mult = 1.00
+                elif win_probability >= 0.70:
+                    size_mult = 0.85
+                else:
+                    size_mult = 0.62 if opp_fold_pressure <= 0.18 else 0.70
                 target = max(BIG_BLIND, int(size_mult * max(pot_size, BIG_BLIND)))
                 raise_amount = max(min_raise, min(max_raise, target))
                 self.aggressed_this_round = True
@@ -334,6 +328,8 @@ class Player(Bot):
     #     return score
 
     def mc_once(self, my_cards, board_cards, discard_idx):
+        sample = random.sample
+        remaining = self.REMAINING_DECK
         new_board = board_cards.copy()
         kept_cards = my_cards.copy()
         if discard_idx != -1:
@@ -343,7 +339,7 @@ class Player(Bot):
             new_board = board_cards + [discarded]
 
         needed = 6 - len(new_board)
-        draw = random.sample(self.REMAINING_DECK, 2 + needed)
+        draw = sample(remaining, 2 + needed)
 
         opp_cards = draw[:2]
         future_board = draw[2 : 2 + needed]
@@ -400,6 +396,8 @@ class Player(Bot):
         return best_discard
 
     def sim_mc_once(self, my_cards, board_cards, discard_idx):
+        sample = random.sample
+        remaining = self.REMAINING_DECK
         new_board = board_cards.copy()
         kept_cards = my_cards.copy()
         if discard_idx != -1:
@@ -412,7 +410,7 @@ class Player(Bot):
         needed = 6 - len(new_board)
         # Preserve existing behavior that effectively skips two cards
         # after dealing the opponent's three cards.
-        draw = random.sample(self.REMAINING_DECK, 3 + 2 + needed)
+        draw = sample(remaining, 3 + 2 + needed)
 
         opp_cards = draw[:3]
         opp_discard_idx = self.choose_opponent_discard_simple(opp_cards, new_board)
@@ -431,10 +429,12 @@ class Player(Bot):
 
     def choose_discard_mc(self, my_cards, board_cards):
         wins = [0, 0, 0]
+        sim_once = self.sim_mc_once
+        mc_iters = self.MC_ITERATIONS
 
         for i in range(3):
-            for _ in range(self.MC_ITERATIONS):
-                wins[i] += self.sim_mc_once(my_cards, board_cards, i)[0]
+            for _ in range(mc_iters):
+                wins[i] += sim_once(my_cards, board_cards, i)[0]
 
         return max(range(3), key=lambda i: wins[i])
 
@@ -561,8 +561,10 @@ class Player(Bot):
 
         wins = 0
         total = 0
+        sim_once = self.sim_mc_once
+        mc_iters = self.MC_ITERATIONS
 
-        for _ in range(self.MC_ITERATIONS):
+        for _ in range(mc_iters):
             # # Get remaining deck
             # deck = self.remaining_deck(my_cards, board_cards)
             # random.shuffle(deck)
@@ -586,7 +588,7 @@ class Player(Bot):
             #         f"My hand: {' '.join(my_hand)} vs Opponent hand: {' '.join(opp_hand)} => Increase: {increase}"
             #     )
 
-            increase = self.sim_mc_once(my_cards, board_cards, discard_idx=-1)
+            increase = sim_once(my_cards, board_cards, discard_idx=-1)
 
             wins += increase[0] if (increase[1] != 0 or street <= 3) else 0
             total += 1 if (increase[1] != 0 or street <= 3) else 0
@@ -598,9 +600,9 @@ class Player(Bot):
             #     # Count ties as half wins
             #     wins += 0.5
 
-        total = self.MC_ITERATIONS if street <= 3 else total
+        total = mc_iters if street <= 3 else total
         # print(f"Wins: {wins}, Total: {total}")
-        return wins / self.MC_ITERATIONS
+        return wins / mc_iters
 
 
 if __name__ == "__main__":
