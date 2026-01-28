@@ -1,5 +1,5 @@
 '''
-ReBeL-style pokerbot using epoch390.torchscript value model.
+ReBeL-style pokerbot using epoch.torchscript value model.
 Query format: 44,226 dims (player_id, traverser, last_action one-hot 15, board 6, discard_choice 2, street 1, beliefs 22,100 each).
 Output: (batch, 22,100) expected values per 3-card hand.
 
@@ -45,7 +45,7 @@ except ImportError:
     print("Then run the engine with the venv activated.", file=sys.stderr)
     sys.exit(1)
 
-_MODEL_PATH = Path(__file__).resolve().parent.parent / "epoch390.torchscript"
+_MODEL_PATH = Path(__file__).resolve().parent / "epoch0.torchscript"
 
 # Last action encoding: 0=fold, 1=call/check, 2-11=bet sizes, 12-14=discard
 LAST_ACTION_CHECK = 1
@@ -139,19 +139,12 @@ class Player(Bot):
     def _beliefs(
         self, hand_ids: list[int], active: int, board_ids: list[int] | None = None
     ) -> tuple[list[float], list[float]]:
-        """Beliefs for player 0 and 1. We use point mass at our hand, uniform for opponent.
-        
-        Updates opponent beliefs to exclude impossible hands (those containing known cards).
-        """
-        b0 = _UNIFORM_BELIEF.copy()
-        b1 = _UNIFORM_BELIEF.copy()
-        
-        # Build set of known cards (our hand + board)
+        """Point mass at our hand, uniform for opponent. build_query reads only; no copy (speed)."""
+        b0 = _UNIFORM_BELIEF
+        b1 = _UNIFORM_BELIEF
         known = set(hand_ids)
         if board_ids:
             known.update(board_ids)
-        
-        # If we have 3 cards, use point mass at that hand
         if len(hand_ids) == 3:
             hidx = hand3_to_index(hand_ids[0], hand_ids[1], hand_ids[2])
             pm = point_mass_belief(hidx)
@@ -172,23 +165,8 @@ class Player(Bot):
         return (b0, b1)
     
     def _update_beliefs_exclude_known(self, known: set[int], active: int) -> list[float]:
-        """Update beliefs to exclude hands containing known cards."""
-        beliefs = [0.0] * NUM_THREE_CARD_HANDS
-        valid_count = 0
-        for i in range(NUM_THREE_CARD_HANDS):
-            h3 = index_to_hand3(i)
-            # Check if this hand contains any known cards
-            if not any(c in known for c in h3):
-                beliefs[i] = 1.0
-                valid_count += 1
-        # Normalize
-        if valid_count > 0:
-            for i in range(NUM_THREE_CARD_HANDS):
-                beliefs[i] /= valid_count
-        else:
-            # Fallback to uniform if all hands are impossible
-            beliefs = _UNIFORM_BELIEF.copy()
-        return beliefs
+        """Uniform opponent belief. No exclusion loop (speed). build_query reads only."""
+        return _UNIFORM_BELIEF
 
     def _encode(
         self,
@@ -216,7 +194,7 @@ class Player(Bot):
         return torch.tensor([vec], dtype=torch.float32, device=self._device)
 
     def _run_model(self, query: torch.Tensor) -> torch.Tensor:
-        with torch.no_grad():
+        with torch.inference_mode():
             return self._model(query)
 
     def _get_hand_value(
@@ -239,8 +217,7 @@ class Player(Bot):
             possible_3rds = [c for c in range(52) if c not in known_cards]
             if not possible_3rds:
                 return vals.float().mean().item()
-            # Sample up to 30 random 3rd cards (balance between speed and accuracy)
-            sample_size = min(30, len(possible_3rds))
+            sample_size = min(5, len(possible_3rds))
             sampled = random.sample(possible_3rds, sample_size)
             # Average values over sampled 3-card hands
             total_val = 0.0
@@ -284,7 +261,8 @@ class Player(Bot):
             best_val = -float("inf")
             board_ids = card_ids(round_state.board)
             known = set(hand_ids) | set(board_ids)
-            # Only evaluate up to 3 discard options (one per card)
+            # SPEED: batch all discard options into one model call
+            queries, keeps_list, indices = [], [], []
             for i in range(len(my_cards)):
                 d0 = i if active == 0 else discard_0
                 d1 = i if active == 1 else discard_1
@@ -294,12 +272,17 @@ class Player(Bot):
                     continue
                 last = LAST_ACTION_DISCARD_BASE + i
                 q = self._encode(round_state, active, keep, d0, d1, last)
-                out = self._run_model(q)
-                # Use simplified 2-card value (faster sampling)
-                sc = self._get_hand_value(out[0], keep, known)
-                if sc > best_val:
-                    best_val = sc
-                    best_idx = i
+                queries.append(q)
+                keeps_list.append(keep)
+                indices.append(i)
+            if queries:
+                batch = torch.cat(queries, dim=0)
+                out = self._run_model(batch)
+                for idx, (keep, i) in enumerate(zip(keeps_list, indices)):
+                    sc = self._get_hand_value(out[idx], keep, known)
+                    if sc > best_val:
+                        best_val = sc
+                        best_idx = i
             self._our_discard_index = best_idx
             return DiscardAction(best_idx)
 
@@ -314,51 +297,45 @@ class Player(Bot):
             q_call = self._encode(round_state, active, hand_ids, discard_0, discard_1, LAST_ACTION_CHECK)
             out_call = self._run_model(q_call)
             call_val = self._get_hand_value(out_call[0], hand_ids, known)
-            # Model outputs expected value - interpret as relative strength
-            # Scale by pot size to get approximate chip value, then subtract cost
-            # Model values are likely normalized, so scale them appropriately
-            scale_factor = pot_size + continue_cost if (pot_size + continue_cost) > 0 else 10.0
+            pot_plus_cost = pot_size + continue_cost if continue_cost > 0 else pot_size
+            base_scale = max(pot_plus_cost * 2.0, 30.0) if pot_plus_cost > 0 else 30.0
+            # Cap scale vs big bets to avoid over-calling (reduce losses)
+            if continue_cost > pot_size:
+                base_scale = min(base_scale, max(pot_size * 1.3, 30.0))
+            scale_factor = base_scale
             scaled_call_val = call_val * scale_factor
             call_ev = scaled_call_val - continue_cost if continue_cost > 0 else scaled_call_val
             action_values[CallAction if CallAction in legal_actions else CheckAction] = call_ev
         
-        # Evaluate fold (if legal) - be VERY conservative
-        if FoldAction in legal_actions:
-            fold_ev = -my_contribution
-            # Only consider fold if we have other actions to compare
-            if len(action_values) > 0:
-                best_continue = max(action_values.values())
-                # Preflop: almost NEVER fold (defend blinds aggressively)
-                # Model might output negative values, but we should still defend
-                if street == 0:
-                    # Preflop: only fold if continuing is TERRIBLE (very negative)
-                    # And even then, be reluctant if we've already put in blinds
-                    if best_continue < -10.0 and my_contribution <= BIG_BLIND:
-                        # Only fold if value is very negative AND we haven't invested much
+        # Fold: aggressive thresholds to reduce losses (preflop -7400 is killing us).
+        if FoldAction in legal_actions and len(action_values) > 0:
+            fold_ev_raw = -my_contribution
+            best_continue = max(action_values.values())
+            fold_ev = fold_ev_raw - 6.0
+            if street == 0:
+                # Preflop: fold more aggressively (reduce -7400 leak)
+                if continue_cost > 0:
+                    # Facing a raise: fold more easily
+                    if fold_ev_raw > best_continue + 8.0:
                         action_values[FoldAction] = fold_ev
-                    # Otherwise, don't even consider fold preflop
                 else:
-                    # Later streets: only fold if clearly much worse
-                    # Use a large threshold to be conservative
-                    threshold = 8.0  # Much larger threshold
-                    if fold_ev > best_continue + threshold:
+                    # First to act: still fold trash
+                    if fold_ev_raw > best_continue + 10.0:
                         action_values[FoldAction] = fold_ev
             else:
-                # No other actions - but still try to avoid fold if possible
-                # Only fold if absolutely necessary
-                if street > 0:  # Don't fold preflop even if no other actions
-                    action_values[FoldAction] = fold_ev
+                # Postflop: fold when facing big bets or clearly behind
+                if continue_cost > pot_size:
+                    # Big bet: fold more easily
+                    if fold_ev_raw > best_continue + 6.0:
+                        action_values[FoldAction] = fold_ev
+                else:
+                    if fold_ev_raw > best_continue + 8.0:
+                        action_values[FoldAction] = fold_ev
         
-        # Evaluate raises (try a couple bet sizes for accuracy)
+        # Evaluate raises - SPEED: single bet size (min_raise) to avoid timeout; keep accuracy
         if RaiseAction in legal_actions:
             min_raise, max_raise = round_state.raise_bounds()
-            # Evaluate min_raise and one larger size if affordable
             bet_sizes_to_try = [min_raise]
-            # Add pot-sized bet if affordable (but limit to 2 sizes total for speed)
-            pot_bet = min_raise + pot_size
-            if pot_bet <= max_raise and pot_bet <= my_stack and pot_bet != min_raise:
-                bet_sizes_to_try.append(pot_bet)
-            
             for bet_size in bet_sizes_to_try:
                 if bet_size > my_stack:
                     continue
@@ -367,56 +344,59 @@ class Player(Bot):
                 q_raise = self._encode(round_state, active, hand_ids, discard_0, discard_1, action_enc)
                 out_raise = self._run_model(q_raise)
                 raise_val = self._get_hand_value(out_raise[0], hand_ids, known)
-                # Scale model value like we did for call
+                # Use same aggressive scaling as call/check
                 future_pot = pot_size + bet_cost + continue_cost
-                scale_factor = future_pot if future_pot > 0 else 10.0
+                scale_factor = max(future_pot * 2.0, 30.0) if future_pot > 0 else 30.0
                 scaled_raise_val = raise_val * scale_factor
                 raise_ev = scaled_raise_val - bet_cost
                 action_values[(RaiseAction, bet_size)] = raise_ev
 
-        # Pick best action
+        # CRITICAL: Ensure we always have at least call/check evaluated
+        # Never fold if we haven't properly evaluated other options
         if not action_values:
-            # Fallback: just check/call (never fold if no actions evaluated)
+            # This should never happen if call/check is legal, but handle it safely
             if CheckAction in legal_actions:
                 self._last_action = LAST_ACTION_CHECK
                 return CheckAction()
-            self._last_action = LAST_ACTION_CHECK
-            return CallAction()
+            if CallAction in legal_actions:
+                self._last_action = LAST_ACTION_CHECK
+                return CallAction()
+            # Only fold if it's literally the only option (shouldn't happen)
+            if FoldAction in legal_actions:
+                return FoldAction()
+            # Ultimate fallback
+            raise RuntimeError("No legal actions available!")
         
-        # Find best action
+        # Ensure we have non-fold options before considering fold
+        non_fold_actions = {k: v for k, v in action_values.items() if k != FoldAction}
+        if not non_fold_actions and FoldAction in action_values:
+            # Only fold if it's literally the only evaluated action
+            # But this should be rare - try to avoid it
+            if CheckAction in legal_actions:
+                self._last_action = LAST_ACTION_CHECK
+                return CheckAction()
+            if CallAction in legal_actions:
+                self._last_action = LAST_ACTION_CHECK
+                return CallAction()
+        
+        # Pick best action by EV. Safety: prefer continue over fold unless fold clearly wins.
         best_action = max(action_values.items(), key=lambda x: x[1])
         action_type, value = best_action
         
-        # Safety checks: Be EXTREMELY reluctant to fold
-        # Model values might be in wrong scale - always err on side of continuing
+        # Safety: prefer continue over fold, but be more willing to fold to reduce losses.
         if action_type == FoldAction and len(action_values) > 1:
-            other_vals = [v for k, v in action_values.items() if k != FoldAction]
-            if other_vals:
-                best_other = max(other_vals)
-                # Preflop: NEVER fold unless continuing is catastrophically bad
+            non_fold = [(k, v) for k, v in action_values.items() if k != FoldAction]
+            if non_fold:
+                best_other = max(v for _, v in non_fold)
                 if street == 0:
-                    # Preflop: only fold if continuing is extremely negative
-                    # And even then, prefer call/check
-                    if best_other > -20.0:  # Within 20 chips - very permissive
-                        best_non_fold = max([(k, v) for k, v in action_values.items() if k != FoldAction], key=lambda x: x[1])
-                        action_type, value = best_non_fold
+                    # Preflop: fold if continuing is negative (reduce -7400 leak)
+                    if best_other > -20.0:
+                        action_type, value = max(non_fold, key=lambda x: x[1])
                 else:
-                    # Later streets: still be very reluctant
-                    if best_other > value - 5.0:  # Within 5 chips
-                        best_non_fold = max([(k, v) for k, v in action_values.items() if k != FoldAction], key=lambda x: x[1])
-                        action_type, value = best_non_fold
-        
-        # Final safety: if we somehow still have fold, and it's preflop, force call/check
-        if action_type == FoldAction and street == 0:
-            if CallAction in legal_actions:
-                action_type = CallAction
-                self._last_action = LAST_ACTION_CHECK
-                return CallAction()
-            elif CheckAction in legal_actions:
-                action_type = CheckAction
-                self._last_action = LAST_ACTION_CHECK
-                return CheckAction()
-        
+                    # Postflop: fold if it's at least 6 chips better
+                    if best_other > value - 6.0:
+                        action_type, value = max(non_fold, key=lambda x: x[1])
+
         # Update last_action tracking
         if isinstance(action_type, tuple):
             # Raise action
@@ -424,6 +404,9 @@ class Player(Bot):
             self._last_action = bet_size_to_action(bet_size, round_state.raise_bounds()[0])
             return RaiseAction(bet_size)
         elif action_type == FoldAction:
+            # Final verification: fold is deliberate
+            # Log that we're making a deliberate fold decision
+            # (In production, you might want to add logging here)
             return FoldAction()
         elif action_type == CallAction:
             self._last_action = LAST_ACTION_CHECK
