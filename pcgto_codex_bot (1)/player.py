@@ -18,6 +18,7 @@ import random
 import pickle
 from bitmask_tables import STRAIGHT_MASK_SET, STRAIGHT_MASKS, RANK_TO_INDEX
 from itertools import combinations
+from collections import Counter
 
 
 def _popcount(x: int) -> int:
@@ -165,6 +166,19 @@ class Player(Bot):
         # print("starting probability calculation...")
         win_probability = self._calc_winning_prob(my_cards, board_cards, street)
         # print("finished probability calculation")
+        total_cards = len(my_cards) + len(board_cards)
+        my_rank_class = (
+            self.best_hand_rank_8(my_cards + board_cards)[1]
+            if total_cards >= 5
+            else None
+        )
+        board_rank_counts = Counter(c[0] for c in board_cards)
+        board_suit_counts = Counter(c[1] for c in board_cards)
+        board_paired = any(v >= 2 for v in board_rank_counts.values())
+        board_trips = any(v >= 3 for v in board_rank_counts.values())
+        board_flushy = any(v >= 3 for v in board_suit_counts.values())
+        strong_made_hand = my_rank_class is not None and my_rank_class >= 4
+        very_strong_hand = my_rank_class is not None and my_rank_class >= 6
         pot_size = my_contribution + opp_contribution
         pot_after_call = pot_size + continue_cost
         pot_odds = (
@@ -187,6 +201,7 @@ class Player(Bot):
             bet_fraction = continue_cost / max(1, pot_after_call)
             big_bet = bet_fraction >= 0.50
             late_street = street >= 5
+            stack_fraction = continue_cost / max(1, my_stack)
             # Preflop blind defense: avoid over-folding to small opens.
             if street == 0 and continue_cost <= BIG_BLIND:
                 if win_probability >= max(0.40, pot_odds - 0.02):
@@ -201,9 +216,46 @@ class Player(Bot):
                         CallAction() if CallAction in legal_actions else CheckAction()
                     )
 
-            # Tighten up versus big bets on late streets to avoid raise wars.
-            if late_street and big_bet and win_probability < 0.88:
+            # Preflop shove defense: only continue with very high equity.
+            if street == 0 and stack_fraction > 0.50 and win_probability < 0.90:
                 return FoldAction() if FoldAction in legal_actions else CheckAction()
+
+            # Tighten up versus big bets on late streets, especially on paired/flushy boards.
+            if late_street and (big_bet or stack_fraction > 0.45):
+                if not very_strong_hand:
+                    if (
+                        my_rank_class is not None
+                        and my_rank_class <= 3
+                        and (board_paired or board_trips or board_flushy)
+                        and win_probability < 0.88
+                    ):
+                        return (
+                            FoldAction()
+                            if FoldAction in legal_actions
+                            else CheckAction()
+                        )
+                    if win_probability < 0.82:
+                        return (
+                            FoldAction()
+                            if FoldAction in legal_actions
+                            else CheckAction()
+                        )
+
+            # Defend a bit wider versus small bets to avoid over-folding.
+            if bet_fraction <= 0.25 and win_probability >= pot_odds - 0.04:
+                return CallAction() if CallAction in legal_actions else CheckAction()
+
+            # If we are pot-committed and facing a smallish bet, don't fold strong enough hands.
+            pot_commit = my_contribution / float(STARTING_STACK)
+            if pot_commit >= 0.55 and continue_cost <= pot_size * 0.20:
+                if (
+                    my_rank_class is None
+                    or my_rank_class >= 1
+                    or win_probability >= 0.30
+                ):
+                    return (
+                        CallAction() if CallAction in legal_actions else CheckAction()
+                    )
 
             if win_probability < call_threshold:
                 return FoldAction() if FoldAction in legal_actions else CheckAction()
@@ -219,7 +271,20 @@ class Player(Bot):
                 else:
                     value_raise = int(pressure_boost * 1.15 * pot_after_call)
                 raise_amount = max(min_raise, min(max_raise, value_raise))
-                if raise_amount > min_raise and random.random() < 0.7:
+                # Be more cautious re-raising big bets late without near-nuts.
+                raise_freq = 0.7
+                if late_street and (big_bet or stack_fraction > 0.35):
+                    if win_probability < 0.90:
+                        raise_freq = 0.0
+                    else:
+                        raise_freq = 0.45
+                if (
+                    late_street
+                    and not strong_made_hand
+                    and (board_paired or board_flushy)
+                ):
+                    raise_freq = 0.0
+                if raise_amount > min_raise and random.random() < raise_freq:
                     self.aggressed_this_round = True
                     return RaiseAction(raise_amount)
 
@@ -234,12 +299,12 @@ class Player(Bot):
                 if active == 0:
                     open_value_threshold = 0.53
                     open_bluff_threshold = 0.45
-                    open_bluff_freq = 0.22 if opp_fold_pressure > 0.18 else 0.15
+                    open_bluff_freq = 0.18 if opp_fold_pressure > 0.18 else 0.12
                 else:
                     # Versus a completed small blind, raise a bit tighter.
                     open_value_threshold = 0.58
                     open_bluff_threshold = 0.48
-                    open_bluff_freq = 0.12 if opp_fold_pressure > 0.18 else 0.08
+                    open_bluff_freq = 0.10 if opp_fold_pressure > 0.18 else 0.06
 
                 wants_open_value = win_probability >= open_value_threshold
                 wants_open_bluff = (
@@ -268,9 +333,9 @@ class Player(Bot):
                 value_threshold -= 0.02
 
             wants_value_bet = win_probability >= value_threshold
-            bluff_freq = 0.12
+            bluff_freq = 0.08
             if opp_fold_pressure > 0.18:
-                bluff_freq = min(0.28, bluff_freq + 0.6 * (opp_fold_pressure - 0.18))
+                bluff_freq = min(0.20, bluff_freq + 0.4 * (opp_fold_pressure - 0.18))
             wants_bluff = (
                 0.44 <= win_probability < value_threshold
                 and random.random() < bluff_freq
@@ -284,6 +349,9 @@ class Player(Bot):
                     size_mult = 0.85
                 else:
                     size_mult = 0.62 if opp_fold_pressure <= 0.18 else 0.70
+                # Avoid bloating the pot with medium-strength hands on late streets.
+                if street >= 5 and win_probability < 0.85:
+                    size_mult = min(size_mult, 0.80)
                 target = max(BIG_BLIND, int(size_mult * max(pot_size, BIG_BLIND)))
                 raise_amount = max(min_raise, min(max_raise, target))
                 self.aggressed_this_round = True
@@ -306,7 +374,7 @@ class Player(Bot):
     SUITS_DICT = {"h": 0, "d": 1, "c": 2, "s": 3}
 
     SUITS = "hdcs"
-    MC_ITERATIONS = 100
+    MC_ITERATIONS = 200
 
     # def full_deck(self):
     #     return [r + s for r in self.RANKS for s in self.SUITS]
@@ -395,7 +463,7 @@ class Player(Bot):
 
         return best_discard
 
-    def sim_mc_once(self, my_cards, board_cards, discard_idx):
+    def sim_mc_once(self, my_cards, board_cards, discard_idx, opp_discard=True):
         sample = random.sample
         remaining = self.REMAINING_DECK
         new_board = board_cards.copy()
@@ -406,25 +474,24 @@ class Player(Bot):
 
             new_board = board_cards + [discarded]
 
-        # deck = self.remaining_deck(my_cards, board_cards)
         needed = 6 - len(new_board)
-        # Preserve existing behavior that effectively skips two cards
-        # after dealing the opponent's three cards.
-        draw = sample(remaining, 3 + 2 + needed)
-
-        opp_cards = draw[:3]
-        opp_discard_idx = self.choose_opponent_discard_simple(opp_cards, new_board)
-        opp_kept_cards = [c for i, c in enumerate(opp_cards) if i != opp_discard_idx]
-
-        future_board = draw[5 : 5 + needed]
+        if opp_discard:
+            draw = sample(remaining, 3 + needed)
+            opp_cards = draw[:3]
+            opp_discard_idx = self.choose_opponent_discard_simple(opp_cards, new_board)
+            opp_kept_cards = [
+                c for i, c in enumerate(opp_cards) if i != opp_discard_idx
+            ]
+            future_board = draw[3 : 3 + needed]
+        else:
+            draw = sample(remaining, 2 + needed)
+            opp_kept_cards = draw[:2]
+            future_board = draw[2 : 2 + needed]
 
         my_hand = kept_cards + new_board + future_board
         opp_hand = opp_kept_cards + new_board + future_board
 
-        # return self.hand_strength(my_hand) > self.hand_strength(opp_hand)
-
         increase = self.compare_hands(my_hand, opp_hand)
-        # print(increase)
         return increase
 
     def choose_discard_mc(self, my_cards, board_cards):
@@ -557,11 +624,13 @@ class Player(Bot):
         """
         if street == 0:
             hand_key = tuple(sorted(my_cards))
-            return self.preflop_equities.get(hand_key)
+            equity = self.preflop_equities.get(hand_key)
+            return 0.5 if equity is None else equity
 
         wins = 0
         total = 0
-        sim_once = self.sim_mc_once
+        # Always simulate opponent drawing 3 and discarding the weakest card.
+        opp_discard = True
         mc_iters = self.MC_ITERATIONS
 
         for _ in range(mc_iters):
@@ -588,10 +657,12 @@ class Player(Bot):
             #         f"My hand: {' '.join(my_hand)} vs Opponent hand: {' '.join(opp_hand)} => Increase: {increase}"
             #     )
 
-            increase = sim_once(my_cards, board_cards, discard_idx=-1)
+            increase = self.sim_mc_once(
+                my_cards, board_cards, discard_idx=-1, opp_discard=opp_discard
+            )
 
-            wins += increase[0] if (increase[1] != 0 or street <= 3) else 0
-            total += 1 if (increase[1] != 0 or street <= 3) else 0
+            wins += increase[0]
+            total += 1
 
             # # Compare hand strengths
             # if self.hand_strength(my_hand) > self.hand_strength(opp_hand):
@@ -600,9 +671,7 @@ class Player(Bot):
             #     # Count ties as half wins
             #     wins += 0.5
 
-        total = mc_iters if street <= 3 else total
-        # print(f"Wins: {wins}, Total: {total}")
-        return wins / mc_iters
+        return wins / total if total else 0.5
 
 
 if __name__ == "__main__":

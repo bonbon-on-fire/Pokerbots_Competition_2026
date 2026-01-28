@@ -1,0 +1,27 @@
+./gto_bot
+- Final, A (-9728), B (9728)
+- Final, A (-8881), B (8881)
+- Final, A (-10691), B (10691)
+
+./conditional_gto_bot + cindy
+
+- Final, A (-9355), B (9355)
+- Final, A (-10615), B (10615)
+- Final, A (-2292), B (2292)
+- Final, A (-3256), B (3256)
+- Final, A (-6270), B (6270)
+
+./precomp_conditional_gto_bot
+
+- Final, A (-9101), B (9101)
+- Final, A (-7071), B (7071)
+- Final, A (-9067), B (9067)
+- Final, A (-12536), B (12536)
+- Final, A (-8004), B (8004)
+
+./pcgto_codex_bot
+- Final, A (-588), B (588)
+- Final, A (-450), B (450)
+- Final, A (-2850), B (2850)
+- Final, A (325), B (-325)
+- Final, A (-1594), B (1594)
