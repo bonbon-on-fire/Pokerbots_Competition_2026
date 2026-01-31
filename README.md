@@ -129,7 +129,7 @@ The variant’s biggest “lever” isn’t just betting — it’s the **discar
 
 ## TL;DR
 
-This is a copy of the original repo for the MIT Pokerbots 2026 competition, it involves a poker variant where each player starts with 3 cards and discards 1. Our bot’s core is a fast bitmask hand evaluator plus Monte Carlo rollouts to pick the best discard and make disciplined continue/fold decisions.
+This is a copy of the original repo for MIT's Pokerbots competition, it involves a poker variant where each player starts with 3 cards and discards 1. Our bot’s core is a bitmask hand evaluator plus Monte Carlo rollouts to pick the best discard and make disciplined check/fold decisions.
 
 ---
 
