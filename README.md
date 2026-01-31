@@ -1,108 +1,113 @@
-# MIT Pokerbots Engine 2026
-MIT Pokerbots engine and skeleton bots in Python, Java, and C++.
+# Pokerbots Repo Copy (Competition Variant)
 
-This is the implementation of the engine for playing this year's poker variant, where you get 3 hole cards pre-flop, and you choose a card to discard face up after the flop.
+## Project Overview
 
-## Setup Instructions
-Our engine runs in Python, and to make setup as smooth as possible we can make use of [`uv`](https://docs.astral.sh/uv/), a powerful tool which handles package management, virtual environments, etc.
+### What I Built
+This repo contains a **competition-ready Pokerbots codebase** (copied from the original competition repository), plus our **final bot** implementation and experiments. The bot’s core is a **fast bitmask hand evaluator** + **Monte Carlo (MC) rollouts** to make discard and betting decisions in a custom poker variant.
 
-> <u>__NOTE: We strongly recommend trying out `uv` even if you are already familiar with tools such as `pip` and `pyenv`__</u>
+### Why I Built It
+The variant’s biggest “lever” isn’t just betting — it’s the **discard mechanic** (you temporarily hold 3 private cards and must discard one onto the board). A bot that discards well can create strong board states for itself while denying the opponent good reaction options. The fastest path to a strong bot was:
+- build an evaluator that’s *fast enough to simulate a lot*, and
+- use simulation to choose discards and avoid “spew” (bad big calls/raise-wars).
 
-To install `uv`, you can use the following:
+## Technical Overview
 
-```bash
-# macOS or Linux
-curl -LsSf https://astral.sh/uv/install.sh | sh 
+### System Architecture
+- **Engine / skeleton**: Competition harness calls your bot’s `handle_new_round`, `get_action`, `handle_round_over`.
+- **Bot policy** (`player.py`): Converts visible cards → ids, runs discard/betting logic, returns an Action.
+- **Fast evaluator** (`bitmask_tables.py` + evaluator helpers): Uses rank/suit bitmasks to quickly rank hands.
+- **Simulation**: MC rollouts estimate win/tie rate for (a) which card to discard and (b) whether continuing is worth it.
 
-# Windows (Powershell)
-powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-```
+### Key Components
+- **Variant rules (the one this repo targets)**
+  - You are dealt **3 hole cards**.
+  - The “flop” reveals **2 board cards**.
+  - Each player **discards 1** of their 3 hole cards **onto the board** (discard order matters because the second discarder can react to what they see).
+  - The board is completed to **6 total board cards** (after both discards + remaining community cards).
+  - Showdown: each player effectively has **8 cards** (2 private + 6 board) and plays the **best 7-card hand**.
 
-Now, after installing `uv` and cloning the repo, run the following commands inside the repo:
+- **Bitmask evaluator**
+  - Each card maps to `(rank_idx, suit_idx, rank_bit)`.
+  - We maintain:
+    - `rank_counts[13]` for pairs/trips/quads detection
+    - `rank_mask` (13-bit) for straights
+    - `suit_masks[4]` (13-bit each) for flush / straight-flush
+  - Output is a comparable tuple like `(category, kicker1, kicker2, ...)` where bigger is better.
 
-```bash
-# Create a virtual environment with a recent Python version chosen by uv
-uv venv
+- **Monte Carlo discard chooser**
+  - For each discard option `d ∈ {0,1,2}`:
+    - simulate the rest of the hand many times,
+    - estimate win/tie score,
+    - pick the discard with highest score.
+  - Opponent discarding is approximated with a simple heuristic (can be upgraded with better opponent modeling).
 
-# Optional: you can also use any Python version of your choice >=3.8, using e.g. `uv venv --python 3.13.3`
+- **Preflop equities (optional speed-up)**
+  - We also experimented with **precomputing equity estimates** for starting hand “cores” and saving them to disk.
+  - Those values can be loaded quickly (instead of recomputing from scratch every round), which helps when time limits are strict.
 
-# Sync the virtual environment with the given project files (pyproject.toml and uv.lock), which basically installs the dependencies:
-# - cython 3.2.3 (needed for pkrbot)
-# - pkrbot 1.0.4 (custom library used for hand evaluation)
-uv sync
-```
+## Code in Action: One Round Flow Example
 
-That's it! There is no need to download the necessary python versions beforehand since `uv` will attempt to find it and install it if necessary.
+### 1. New round starts
+- `handle_new_round` runs.
+- We reset per-round trackers (e.g., raise counters) and optionally sample a light “style mode”.
 
-Now, to finally run the engine, you can use the Python executable inside of the virtual environment (should be at `<PROJECT_DIR>/.venv/bin/python`) and run `engine.py`. To change the bots which are run, see `config.py`.
+### 2. Pre-discard betting
+- `get_action` runs on the preflop street(s).
+- Basic logic: don’t do anything fancy yet—avoid massive mistakes and keep stacks intact.
 
-### C++ Specific Instructions
-If you are writing a bot in C++, you should make sure that you have `C++17`, `cmake>=3.8`, and `boost`, a versatile library which we use for stream-oriented network communication.
+### 3. Flop appears (2 board cards)
+- `get_action` sees a new `street` and updates counters.
 
-There are many ways to install C++ and `cmake` on your machine, but ultimately you want to make sure that your versions are high enough with these commands:
+### 4. Discard phase (the key decision)
+- If `DiscardAction` is legal:
+  - convert `my_cards` + `board_cards` into ids,
+  - run `choose_discard_mc(...)`,
+  - return `DiscardAction(best_index)`.
 
-```bash
-cmake --version   # should be 3.8 or higher
+### 5. Post-discard betting + showdown
+- After both discards, we use MC-estimated win probability + pot odds to decide:
+  - **fold** when clearly behind and facing big pressure,
+  - **call/check** as the default,
+  - **raise** sparingly (unless we later add stronger strength/texture logic).
 
-# Check either g++ or clang++ depending on which compiler you are using
-g++ --version     # should show something like g++ (GCC) 10.x or newer
-clang++ --version # should show something like Apple clang version 10.x or newer
-```
+## How the Bot Works (High-Level Strategy)
+1) **Win the discard game first.**  
+   Discard selection is equity-driven using Monte Carlo. That’s the single most important edge in this variant.
 
-Now, to get `boost`, you can use the following:
+2) **Don’t donate chips.**  
+   The baseline betting policy is conservative: mostly check/call, fold to big pressure unless the estimated win probability clears pot-odds + margin.
 
-```bash
-# Linux
-sudo apt-get install -y libboost-all-dev 
+3) **Adapt (lightly) to opponent behavior.**  
+   We track simple opponent action frequencies (raise/fold/check-call) and can widen/tighten our continue ranges over time.
 
-# macOS
-brew install boost                      
+4) **Game-theory note we learned after the competition:**  
+   Some teams used a “lock-in” strategy: once they were comfortably ahead in bankroll, they would **fold most or all remaining rounds** because the win condition is “finish ahead,” not “maximize margin.” It’s ugly, but it works under that scoring rule.
 
-# Windows (C++ bots must use WSL)
-wsl --install
-sudo apt update
-sudo apt install -y libboost-all-dev                   
-```
+## Project Structure & File Guide
 
-> NOTE: For the macOS command to work, you must first install `brew`, with this command:
-> 
-> ```bash
-> /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-> ```
->
-> Now brew should work as needed. If boost is not auto-detected after installing with brew, use
->
-> ```bash
-> cmake -DBOOST_ROOT=/opt/homebrew -DCMAKE_BUILD_TYPE=Debug ..
-> ```
+### Directory Overview
+- `player.py`  
+  Main bot logic: action selection, discard MC, (optionally) EV / pot-odds gating.
+- `bitmask_tables.py`  
+  Card-id mappings + straight masks / helpers used by the evaluator.
+- `skeleton/`  
+  Competition harness: states, actions, runner, networking.
 
+## Current Status
+- Final bot is functional and stable.
+- Strong discard logic via MC + fast evaluator.
+- Betting is intentionally conservative (safe baseline).
 
-### Java Specific Instructions
-If you are writing a bot in Java, you should make sure that you have `Java>=8` installed on your machine. 
+## Challenges and How I Solved Them
+- **Runtime limits**: MC is expensive. We used a fast evaluator and reduced iterations where possible.
+- **Variant complexity**: discard order matters; we built the discard logic so the “try all 3 discards” structure stays reusable.
+- **Language ecosystem**: we tried converting the bot to **Java** because languages were scored separately and we suspected fewer Java entries. We ran out of time to finish the port — and it turned out there was basically only **one** Java bot anyway.
 
-If `java -version` fails or shows a version <1.8, install Java using the instructions below. After installing, use `java -version` again to verify successful installation.
+## Future Possibilities
+- Better opponent range modeling (condition MC samples on opponent actions).
+- Board texture features (wet/dry board) to size bets and reduce bluffs on dangerous boards.
+- A proper raise ladder / “anti-spew” policy to prevent accidental stack-offs.
+- Reinforcement learning / CFR-style offline training (expensive, but possible if you can generate enough data and compute).
 
-#### macOS
-
-The recommended version is with brew:
-```bash
-brew install --cask temurin
-```
-
-It is also possible to download manually from: [Adoptium](https://adoptium.net).
-
-> NOTE: If java is not found after installing (macOS only), use: 
-> ```bash
-> echo 'export PATH="/Library/Java/JavaVirtualMachines/temurin-17.jdk/Contents/Home/bin:$PATH"' >> ~/.zshrc
-> ```
-
-#### Linux
-You can simply run the commands below:
-```bash
-sudo apt update
-sudo apt install -y openjdk-17-jdk
-```
-
-#### Windows
-
-You can download manually from: [Adoptium](https://adoptium.net), install using the `.msi` installer, and make sure "Add to PATH" is checked.
+## TL;DR
+Fast evaluator + Monte Carlo discard is the engine. Conservative betting avoids spew. Biggest gains next are opponent modeling, texture-aware sizing, and cleaner pot-odds thresholds.
